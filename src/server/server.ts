@@ -1,0 +1,629 @@
+import express from 'express';
+import fs from 'fs';
+import path from 'path';
+import { exec } from 'child_process';
+import { runDiagnostic } from '../diagnostics/run.js';
+import { SourceInfo } from '../types.js';
+import { PLATFORMS } from '../platforms/index.js';
+import { ENABLED_PLATFORMS, PullConfig, runPullRound } from './pull.js';
+import {
+  AnalysisProgress,
+  ANALYSIS_ROOT,
+  createAnalysisStatus,
+  listTasks,
+  readTaskFile,
+  runSourceAnalysis,
+} from './sourceAnalysis.js';
+import {
+  LOGIN_DRIVERS,
+  allocateAccount,
+  confirmLogin,
+  deleteAccount,
+  listViews,
+  loginBusy,
+  logoutAccount,
+  releaseAccount,
+  startLogin,
+  testAccount,
+  closeTestAccount,
+  listTestSessions,
+  updateAlias,
+} from './loginRegistry.js';
+import { adminPageHtml } from './loginUI.js';
+
+const PORT = 8787;
+const TIMEOUT_MS = 3 * 60 * 1000;
+
+// 平台标识统一为下层 modeId（qwen/wenxiaoyan/hunyuan/doubao/deepseek），对外接口直接透传，
+// 不再做别名映射（2026-09-08 对齐：消除双命名导致的回推错位 bug）。
+
+// 失败原因摘要（取错误/警告类备注）
+function summarize(notes: string[]): string {
+  const hits = notes.filter((n) => n.includes('❌') || n.includes('⚠️'));
+  const picked = hits.length ? hits : notes;
+  return picked.join('；').slice(0, 500) || '未知原因';
+}
+
+function siteFromUrl(url?: string): string {
+  if (!url) return '';
+  try {
+    return new URL(url).hostname.replace(/^www\./, '');
+  } catch {
+    return '';
+  }
+}
+
+class ApiError extends Error {
+  constructor(
+    public status: number,
+    public msg: string
+  ) {
+    super(msg);
+  }
+}
+
+// 身份策略（2026-09-03 定稿，用户 12:43 拍板）：
+//  - 文心：匿名身份轮换 .profiles/wenxiaoyan-rotating（quota 4）。匿名仍可用（loginRequired=false、
+//    sources 22~30），保留计数轮换。
+//  - 千问：**单一匿名持久身份** .profiles/qwen。两种重生：①撞登录墙清空重生并自动重试一次；
+//    ②**按对话数主动重生**（每 QIANWEN_CONVERSATION_LIMIT 个成功对话清空一次），在平台"约 5 新对话后弹登录提示"
+//    的软阈值出现前就刷新，避免被标记。⚠️ 教训：不做多身份轮换——同 IP 快速轮换触发风控短限
+//    （12:34 实测连新身份都要登录；12:40 冷却后单个干净匿名身份直接可用）。单身份低频清 cookie 最像真人。
+const ROTATIONS: Record<string, { dir: string; quota: number }> = {
+  wenxiaoyan: { dir: '.profiles/wenxiaoyan-rotating', quota: 4 },
+};
+// 撞墙才重生的平台（不预清空，撞登录墙时清空 + 自动重试一次）
+const REACTIVE_RESET_PLATFORMS = new Set(['qwen']);
+const QWEN_PROFILE_DIR = '.profiles/qwen';
+// 千问匿名身份阈值：约 5 个新对话后平台弹登录提示（软阈值，不一定阻断回答），达到即主动清空重生，
+// 避免提示出现——也契合「约 5 问一次清 cookie」的设计意图（非多身份轮换，单身份低频清 cookie 不触发风控）。
+const QIANWEN_CONVERSATION_LIMIT = 5;
+const QWEN_STATE_FILE = `${QWEN_PROFILE_DIR}.json`;
+
+function readQwenCount(): number {
+  try {
+    return (JSON.parse(fs.readFileSync(QWEN_STATE_FILE, 'utf-8')) as { count: number }).count ?? 0;
+  } catch {
+    return 0;
+  }
+}
+function writeQwenCount(n: number): void {
+  fs.mkdirSync(path.dirname(QWEN_STATE_FILE), { recursive: true });
+  fs.writeFileSync(QWEN_STATE_FILE, JSON.stringify({ count: n }));
+}
+function resetQwenIdentity(reason: string): void {
+  fs.rmSync(QWEN_PROFILE_DIR, { recursive: true, force: true });
+  writeQwenCount(0);
+  console.log(`[qwen身份] ${reason}`);
+}
+
+type RotationState = { count: number };
+
+function stateFileOf(dir: string): string {
+  return `${dir}.json`;
+}
+
+function readRotationState(dir: string): RotationState {
+  try {
+    return JSON.parse(fs.readFileSync(stateFileOf(dir), 'utf-8')) as RotationState;
+  } catch {
+    return { count: 0 };
+  }
+}
+
+function writeRotationState(dir: string, s: RotationState): void {
+  fs.mkdirSync(path.dirname(stateFileOf(dir)), { recursive: true });
+  fs.writeFileSync(stateFileOf(dir), JSON.stringify(s));
+}
+
+// 取身份：计数到额度 → 清空 profile 目录（新身份）并归零
+function acquireIdentity(platform: string): void {
+  const cfg = ROTATIONS[platform];
+  const st = readRotationState(cfg.dir);
+  if (st.count >= cfg.quota) {
+    fs.rmSync(cfg.dir, { recursive: true, force: true });
+    writeRotationState(cfg.dir, { count: 0 });
+    console.log(`[${platform}身份] 已用满 ${cfg.quota} 次，清空 storage 重生匿名身份`);
+  }
+}
+
+// 归还身份：计数 +1；撞到登录墙（异常消耗/口径变化）→ 立即清空重生，不等计数
+function releaseIdentity(platform: string, loginRequired: boolean): void {
+  const cfg = ROTATIONS[platform];
+  if (loginRequired) {
+    fs.rmSync(cfg.dir, { recursive: true, force: true });
+    writeRotationState(cfg.dir, { count: 0 });
+    console.log(`[${platform}身份] 检测到登录墙，提前清空 storage 重生匿名身份`);
+    return;
+  }
+  const st = readRotationState(cfg.dir);
+  writeRotationState(cfg.dir, { count: st.count + 1 });
+}
+
+// 组装响应：截图 base64 + 回答 + 信源
+export async function execute(
+  platform: string,
+  keyword: string,
+  headed: boolean
+): Promise<{ screenshot: string; answer: string; sources: { title: string; url: string; siteName: string }[] }> {
+  let userDataDir: string | undefined = `.profiles/${platform}`;
+  let waitLoginMs = 0;
+  let ledgerAccountId: string | undefined;
+  // 登录制平台统一走 /admin 账号台账（与 cli.ts:56 同一套逻辑，避免"CLI 能跑、服务端拿不到账号"）。
+  // 判定用 LOGIN_DRIVERS 而非硬编码平台名：新增台账平台（DeepSeek 等）自动生效。
+  const loginDriver = LOGIN_DRIVERS[platform];
+  // 全平台登录制（2026-09-07：千问/文心由匿名切换为登录，所有大模型走登录台账）。
+  // 登录制平台不参与任何匿名身份机制（轮换/重生），以下两标志对其强制失效。
+  const isLoginPlatform = !!loginDriver?.loginRequired;
+  const rotation = isLoginPlatform ? undefined : ROTATIONS[platform];
+  const reactive = isLoginPlatform ? false : REACTIVE_RESET_PLATFORMS.has(platform);
+  if (loginDriver?.loginRequired) {
+    const ready = allocateAccount(platform);
+    if (!ready.ok) throw new ApiError(409, ready.reason ?? `${platform} 没有可用登录账号`);
+    ledgerAccountId = ready.accountId;
+    userDataDir = ready.dir;
+    waitLoginMs = 0;
+  } else if (rotation) {
+    acquireIdentity(platform);
+    userDataDir = rotation.dir;
+  } else if (reactive) {
+    userDataDir = QWEN_PROFILE_DIR;
+  } else {
+    waitLoginMs = headed ? 120_000 : 0; // 登录态平台：有头窗口内等人工登录
+  }
+  let result = await runDiagnostic(keyword, {
+    platform,
+    useSystemChrome: true,
+    userDataDir,
+    headless: !headed,
+    waitLoginMs,
+  });
+  if (rotation) releaseIdentity(platform, result.loginRequired);
+  if (ledgerAccountId) {
+    releaseAccount(platform, ledgerAccountId, !!result.answerText && !result.loginRequired, result.loginRequired);
+    // ⚠️ 登录平台：打开登录账号目录后仍检测到登录墙（磁盘登录态失效/从未落盘）→ 明确失败并提示重登，
+    // 绝不默默以匿名/未登录态跑完冒充成功（2026-09-07 文心实测：登录目录无 BDUSS，整轮匿名问答还报 ok）。
+    // 上面 releaseAccount 的 loginRequired=true 分支已把该账号标 failed，此处抛错终止本轮。
+    if (result.loginRequired) {
+      throw new ApiError(
+        401,
+        `「${LOGIN_DRIVERS[platform]?.label ?? platform}」${ledgerAccountId} 登录态失效或未持久化（磁盘上无有效登录会话），本轮已按失败处理。请到 /admin 对该账号点「退出登录」后重新登录，再重试。`
+      );
+    }
+  }
+  // 千问：单一匿名持久身份。①撞登录墙 → 清空重生并自动重试；②成功对话累计到阈值 → 主动清空重生，避免触发登录提示
+  if (reactive) {
+    if (result.loginRequired) {
+      resetQwenIdentity('撞登录墙，重置匿名身份并自动重试一次');
+      result = await runDiagnostic(keyword, {
+        platform,
+        useSystemChrome: true,
+        userDataDir: QWEN_PROFILE_DIR,
+        headless: !headed,
+        waitLoginMs: 0,
+      });
+    } else if (result.answerText) {
+      const c = readQwenCount() + 1;
+      if (c >= QIANWEN_CONVERSATION_LIMIT) {
+        resetQwenIdentity(`已用满 ${QIANWEN_CONVERSATION_LIMIT} 个匿名对话，提前清空重生（避免触发登录提示）`);
+      } else {
+        writeQwenCount(c);
+      }
+    }
+  }
+
+  if (!result.answerText) {
+    throw new ApiError(500, summarize(result.notes));
+  }
+  // 2026-09-03 17:47 用户定：截图失败/未产出 → 不整页兜底，screenshot 留空（不因缺截图判失败）
+  let screenshot = '';
+  const shotRel = result.artifacts.qaScreenshot;
+  if (shotRel) {
+    const shotPath = path.join(result.sampleDir, shotRel);
+    if (fs.existsSync(shotPath)) {
+      screenshot = `data:image/png;base64,${fs.readFileSync(shotPath).toString('base64')}`;
+    } else {
+      console.log(`[${platform}] 截图文件缺失但已标记产出，忽略（screenshot 留空）`);
+    }
+  }
+  const toSource = (s: SourceInfo) => ({
+    title: s.title ?? '',
+    url: s.url ?? '',
+    siteName: s.platform ?? siteFromUrl(s.url),
+  });
+  return { screenshot, answer: result.answerText, sources: (result.sources ?? []).map(toSource) };
+}
+
+// 同平台串行、跨平台并行
+const queues = new Map<string, Promise<void>>();
+function enqueue(key: string, task: () => Promise<void>): Promise<void> {
+  const prev = queues.get(key) ?? Promise.resolve();
+  const next = prev.then(task, task);
+  queues.set(key, next);
+  return next;
+}
+
+function withTimeout<T>(p: Promise<T>): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(() => reject(new ApiError(504, '超时：3分钟内未完成抓取')), TIMEOUT_MS);
+    p.then(
+      (v) => {
+        clearTimeout(t);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(t);
+        reject(e);
+      }
+    );
+  });
+}
+
+const app = express();
+app.use(express.json({ limit: '1mb' }));
+
+// 采集问答
+app.post('/api/web-collect', (req, res) => {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const rawPlatform = typeof body.platform === 'string' ? body.platform.toLowerCase().trim() : '';
+  const platform = rawPlatform;
+  const keyword = typeof body.keyword === 'string' ? body.keyword.trim() : '';
+  const headed = body.headed === true;
+
+  if (!platform || !PLATFORMS[platform]) {
+    res
+      .status(400)
+      .json({ msg: `不支持的平台 "${rawPlatform || '(空)'}"，支持：qwen（千问）、wenxiaoyan（百度文心）、hunyuan（腾讯元宝）、doubao（豆包）、deepseek` });
+    return;
+  }
+  if (!keyword) {
+    res.status(400).json({ msg: 'keyword 不能为空' });
+    return;
+  }
+
+  enqueue(platform, async () => {
+    const data = await withTimeout(execute(platform, keyword, headed));
+    res.status(200).json(data);
+  }).catch((e: unknown) => {
+    if (res.headersSent) return;
+    if (e instanceof ApiError) {
+      res.status(e.status).json({ msg: e.msg });
+    } else {
+      res.status(500).json({ msg: (e as Error).message || '抓取失败' });
+    }
+  });
+});
+
+// 拉模式（pull）：手动触发，分页拉词逐个采集，结果回推。
+// 对方服务地址优先级：/api/pull/run 请求体 pullHost（admin 页可填，默认 http://127.0.0.1:8101）
+//                  > 环境变量 GEO_PULL_HOST（服务启动时注入，作默认兜底）。
+// 时间范围 startTime/endTime 由请求体透传（可选），不带则拉全部。
+const envPullHost = process.env.GEO_PULL_HOST?.trim() || '';
+
+const pullStatus = {
+  running: false,
+  startedAt: 0,
+  finishedAt: 0,
+  pages: 0,
+  fetched: 0,
+  success: 0,
+  failed: 0,
+  reportFailed: 0,
+  lastError: '',
+  host: '',
+};
+
+// 手动触发一轮 pull：后台跑，202 立即返回；进度看 GET /api/pull/status 与服务日志
+app.post('/api/pull/run', (req, res) => {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  // 对方服务地址：请求体 pullHost 优先，其次环境变量 GEO_PULL_HOST；允许省略 http:// 前缀
+  const bodyHost = typeof body.pullHost === 'string' ? body.pullHost.trim() : '';
+  let host = bodyHost || envPullHost;
+  if (host && !/^https?:\/\//i.test(host)) host = `http://${host}`;
+  if (host) {
+    try {
+      if (!new URL(host).hostname) throw new Error('empty hostname');
+    } catch {
+      res.status(400).json({ msg: `pullHost 无效：${host}` });
+      return;
+    }
+  }
+  if (!host) {
+    res
+      .status(400)
+      .json({ msg: '缺少对方服务地址：请在请求体传 pullHost（admin 页可填），或启动时注入 GEO_PULL_HOST' });
+    return;
+  }
+  if (pullStatus.running) {
+    res.status(409).json({ msg: '已有一轮 pull 在运行，请等待其结束（可看 GET /api/pull/status）' });
+    return;
+  }
+  // 平台：默认全部启用平台；勾选哪些就只跑哪些（body.platforms 数组，下层 modeId）。兼容旧的 body.platform 单值。
+  const rawPlats = (
+    (Array.isArray(body.platforms) ? body.platforms.map(String) : [])
+      .concat(typeof body.platform === 'string' && body.platform.trim() ? [body.platform] : [])
+      .map((s) => s.toLowerCase().trim())
+      .filter(Boolean) as string[]
+  ).filter((p) => ENABLED_PLATFORMS.includes(p));
+  const forced: string[] | undefined = rawPlats.length ? rawPlats : undefined;
+  // 时间范围透传：调用方可带 startTime/endTime（yyyy-MM-dd 或 yyyy-MM-dd HH:mm:ss），不带则拉全部
+  const startTime = typeof body.startTime === 'string' && body.startTime.trim() ? body.startTime.trim() : undefined;
+  const endTime = typeof body.endTime === 'string' && body.endTime.trim() ? body.endTime.trim() : undefined;
+  // 格式校验：只放行 yyyy-MM-dd 或 yyyy-MM-dd HH:mm:ss（T 分隔也认），避免格式写错被静默透传、下层按空处理而拉到全量
+  const TIME_RE = /^\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}:\d{2})?$/;
+  const badTime: [string, string] | undefined =
+    startTime && !TIME_RE.test(startTime)
+      ? ['startTime', startTime]
+      : endTime && !TIME_RE.test(endTime)
+        ? ['endTime', endTime]
+        : undefined;
+  if (badTime) {
+    res.status(400).json({ msg: `${badTime[0]} 格式不正确：应为 yyyy-MM-dd 或 yyyy-MM-dd HH:mm:ss，当前「${badTime[1]}」` });
+    return;
+  }
+  const headed = body.headed === true; // 默认无头；需要人工盯/首次登录等场景传 true
+  pullStatus.running = true;
+  pullStatus.startedAt = Date.now();
+  pullStatus.finishedAt = 0;
+  pullStatus.pages = 0;
+  pullStatus.fetched = 0;
+  pullStatus.success = 0;
+  pullStatus.failed = 0;
+  pullStatus.reportFailed = 0;
+  pullStatus.lastError = '';
+  pullStatus.host = host;
+  res.status(202).json({ msg: 'pull 轮次已开始，进度见 GET /api/pull/status 与服务日志' });
+  const cfg: PullConfig = { host, pageSize: 20, startTime, endTime };
+  console.log(`[pull] 触发：host=${host} headless=${!headed} platform=${forced ? forced.join(',') : 'auto(全部启用)'} startTime=${startTime ?? '-'} endTime=${endTime ?? '-'}`);
+  // execute 自带平台身份策略（千问撞墙重生 / 文心轮换）；headed 由本轮请求决定
+  runPullRound(cfg, (platform, keyword) => execute(platform, keyword, headed), forced, (line) => console.log(`[pull] ${line}`))
+    .then((s) => {
+      pullStatus.running = false;
+      pullStatus.finishedAt = Date.now();
+      Object.assign(pullStatus, s);
+      console.log(`[pull] 轮次结束：${JSON.stringify(s)}`);
+    })
+    .catch((e: unknown) => {
+      pullStatus.running = false;
+      pullStatus.finishedAt = Date.now();
+      pullStatus.lastError = (e as Error).message || 'pull 轮次异常';
+      console.error('[pull] 轮次异常：', pullStatus.lastError);
+    });
+});
+
+// pull 轮次进度（内存态，仅当轮）
+app.get('/api/pull/status', (_req, res) => {
+  res.status(200).json(pullStatus);
+});
+
+// ---------- 信源分析（页面输入多关键词 → 全部平台顺序采集 → 每平台一个 JSON 文件） ----------
+// 口径见 sourceAnalysis.ts 顶部注释（citeCount 不去重 / 全程串行 / 按平台各自独立聚合）。
+let analysisStatus: AnalysisProgress | null = null;
+
+app.post('/api/source-analysis/run', (req, res) => {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  // 关键词：可接受数组，也可直接把 textarea 整段文本丢进来（按行切、去空行）
+  const rawKw = body.keywords;
+  const keywords = (Array.isArray(rawKw) ? rawKw.map(String) : String(rawKw ?? '').split('\n'))
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (!keywords.length) {
+    res.status(400).json({ msg: '请至少填一个关键词（每行一个）' });
+    return;
+  }
+  if (analysisStatus?.running) {
+    res.status(409).json({ msg: '已有一轮信源分析在运行，请等待其结束（可看 GET /api/source-analysis/status）' });
+    return;
+  }
+  // 平台：默认全部启用平台；可传数组或逗号分隔串（直接传下层 modeId：qwen/wenxiaoyan/hunyuan/doubao/deepseek）
+  const rawPlat = body.platforms;
+  const wanted = (Array.isArray(rawPlat) ? rawPlat.map(String) : String(rawPlat ?? '').split(','))
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  const platforms = (wanted.length
+    ? ENABLED_PLATFORMS.filter((p) => wanted.includes(p))
+    : [...ENABLED_PLATFORMS]
+  ).map((p) => ({ platform: p, modelId: p }));
+  if (!platforms.length) {
+    res.status(400).json({ msg: `没有匹配的平台，可选：${ENABLED_PLATFORMS.join(', ')}` });
+    return;
+  }
+  const headed = body.headed === true; // 默认无头
+  const name = typeof body.name === 'string' ? body.name : undefined;
+  const mode: 'serial' | 'parallel' = body.mode === 'parallel' ? 'parallel' : 'serial';
+  const status = createAnalysisStatus(keywords, platforms, name, mode);
+  analysisStatus = status;
+  res.status(202).json({ msg: '信源分析已开始，进度见 GET /api/source-analysis/status', taskId: status.taskId });
+  console.log(
+    `[信源分析] 触发：taskId=${status.taskId} 模式=${mode} 词数=${keywords.length} 平台=${platforms.map((p) => p.modelId).join(',')} headless=${!headed}`
+  );
+  runSourceAnalysis(status, keywords, (p, kw) => execute(p, kw, headed), (p) => p, (l) =>
+    console.log(`[信源分析] ${l}`)
+  ).catch((e: unknown) => {
+    status.running = false;
+    status.finishedAt = Date.now();
+    status.lastError = (e as Error).message || '信源分析异常';
+    console.error('[信源分析] 异常：', status.lastError);
+  });
+});
+
+app.get('/api/source-analysis/status', (_req, res) => {
+  res.status(200).json(analysisStatus ?? { running: false });
+});
+
+// 历史任务（倒序），页面回看/下载用
+app.get('/api/source-analysis/tasks', (_req, res) => {
+  res.status(200).json({ tasks: listTasks() });
+});
+
+// 产物文件；加 ?download=1 走附件下载
+app.get('/api/source-analysis/file/:taskId/:file', (req, res) => {
+  const content = readTaskFile(req.params.taskId, req.params.file);
+  if (content === null) {
+    res.status(404).json({ msg: '文件不存在' });
+    return;
+  }
+  if (req.query.download === '1') {
+    res.setHeader('content-disposition', `attachment; filename="${req.params.taskId}-${req.params.file}"`);
+  }
+  res.type('json').send(content);
+});
+
+// 打开产物目录（点击历史任务名称时调用）：macOS 用 open 唤起 Finder 选中目录，其余平台仅返回路径
+app.post('/api/source-analysis/open', (req, res) => {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const taskId = String(body.taskId ?? '').trim();
+  // taskId 即产物目录名（允许中文/常见字符）；仅拦截路径穿越
+  if (!taskId || taskId.includes('/') || taskId.includes('\\') || taskId.includes('..')) {
+    res.status(400).json({ msg: '非法任务 ID' });
+    return;
+  }
+  const dir = path.join(ANALYSIS_ROOT, taskId);
+  if (!dir.startsWith(ANALYSIS_ROOT) || !fs.existsSync(dir)) {
+    res.status(404).json({ msg: '目录不存在' });
+    return;
+  }
+  const target = JSON.stringify(dir); // 引号包裹，目录含空格也安全
+  if (process.platform === 'darwin') {
+    exec(`open ${target}`, (e) => {
+      if (e) console.error('[信源分析] 打开目录失败：', e.message);
+    });
+  }
+  res.status(200).json({ ok: true, msg: '已尝试打开目录', dir });
+});
+
+// ---------- 平台登录管理（页面 + 接口；账号级操作，id→dir 台账唯一映射防串） ----------
+app.get('/admin', (_req, res) => {
+  res.type('html').send(adminPageHtml());
+});
+
+app.get('/api/login/platforms', (_req, res) => {
+  const busy = loginBusy();
+  const testing = new Set(listTestSessions());
+  res.status(200).json({
+    platforms: listViews().map((p) => ({
+      platformId: p.platformId,
+      label: p.label,
+      hint: p.hint,
+      accounts: p.accounts.map((a) => ({
+        ...a,
+        busy: busy.accountId === a.id,
+        testing: testing.has(`${p.platformId}/${a.id}`),
+      })),
+    })),
+  });
+});
+
+// 已打开的测试窗口列表（platformId/accountId），前端轮询回显按钮状态
+app.get('/api/login/test/sessions', (_req, res) => {
+  res.status(200).json({ sessions: listTestSessions() });
+});
+
+// 采集平台清单（信源分析页勾选用）：平台 modeId / 中文名 / 是否登录制
+app.get('/api/platforms', (_req, res) => {
+  res.status(200).json({
+    platforms: ENABLED_PLATFORMS.map((id) => ({
+      platformId: id,
+      label: PLATFORMS[id]?.label ?? id,
+      modelId: id,
+      loginRequired: !!LOGIN_DRIVERS[id]?.loginRequired,
+    })),
+  });
+});
+
+function bodyAccountId(req: { body?: unknown }): string | undefined {
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  return typeof b.accountId === 'string' && b.accountId.trim() ? b.accountId.trim() : undefined;
+}
+
+app.post('/api/login/:platform/start', (req, res) => {
+  const id = String(req.params.platform).toLowerCase();
+  if (!(id in LOGIN_DRIVERS)) {
+    res.status(404).json({ msg: `未注册的登录平台：${id}` });
+    return;
+  }
+  // 不带 accountId → 新开账号槽；带 → 指定账号（重新）登录
+  startLogin(id, bodyAccountId(req))
+    .then((r) => res.status(r.ok ? 200 : 409).json({ msg: r.msg, accountId: r.accountId }))
+    .catch((e: unknown) => res.status(500).json({ msg: (e as Error).message }));
+});
+
+app.post('/api/login/:platform/verify', async (req, res) => {
+  const id = String(req.params.platform).toLowerCase();
+  const accountId = bodyAccountId(req);
+  if (!accountId) {
+    res.status(400).json({ msg: '缺少 accountId' });
+    return;
+  }
+  const r = await confirmLogin(id, accountId);
+  res.status(r.ok ? 200 : 400).json({ msg: r.msg });
+});
+
+app.post('/api/login/:platform/logout', (req, res) => {
+  const id = String(req.params.platform).toLowerCase();
+  const accountId = bodyAccountId(req);
+  if (!accountId) {
+    res.status(400).json({ msg: '缺少 accountId' });
+    return;
+  }
+  const r = logoutAccount(id, accountId);
+  res.status(r.ok ? 200 : 400).json({ msg: r.msg });
+});
+
+app.post('/api/login/:platform/delete', (req, res) => {
+  const id = String(req.params.platform).toLowerCase();
+  const accountId = bodyAccountId(req);
+  if (!accountId) {
+    res.status(400).json({ msg: '缺少 accountId' });
+    return;
+  }
+  const r = deleteAccount(id, accountId);
+  res.status(r.ok ? 200 : 400).json({ msg: r.msg });
+});
+
+app.post('/api/login/:platform/alias', (req, res) => {  const id = String(req.params.platform).toLowerCase();
+  const accountId = bodyAccountId(req);
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  const alias = typeof b.alias === 'string' ? b.alias.trim().slice(0, 30) : '';
+  if (!accountId || !alias) {
+    res.status(400).json({ msg: '缺少 accountId/alias' });
+    return;
+  }
+  const r = updateAlias(id, accountId, alias);
+  res.status(r.ok ? 200 : 400).json({ msg: r.msg });
+});
+
+// 打开某账号的测试窗口（手动聊天，不跑自动化）
+app.post('/api/login/:platform/test', (req, res) => {
+  const id = String(req.params.platform).toLowerCase();
+  if (!(id in LOGIN_DRIVERS)) {
+    res.status(404).json({ msg: `未注册的登录平台：${id}` });
+    return;
+  }
+  const accountId = bodyAccountId(req);
+  if (!accountId) {
+    res.status(400).json({ msg: '缺少 accountId' });
+    return;
+  }
+  testAccount(id, accountId)
+    .then((r) => res.status(r.ok ? 200 : 409).json({ msg: r.msg }))
+    .catch((e: unknown) => res.status(500).json({ msg: (e as Error).message }));
+});
+
+// 关闭某账号的测试窗口
+app.post('/api/login/:platform/test-close', (req, res) => {
+  const id = String(req.params.platform).toLowerCase();
+  const accountId = bodyAccountId(req);
+  if (!accountId) {
+    res.status(400).json({ msg: '缺少 accountId' });
+    return;
+  }
+  closeTestAccount(id, accountId)
+    .then((r) => res.status(r.ok ? 200 : 400).json({ msg: r.msg }))
+    .catch((e: unknown) => res.status(500).json({ msg: (e as Error).message }));
+});
+
+// 启动 API 服务（按用户要求：启动时不打印日志）
+export function startServer(): void {
+  app.listen(PORT);
+}

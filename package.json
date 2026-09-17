@@ -1,0 +1,24 @@
+{
+  "name": "geo-ui-browser",
+  "version": "0.1.0",
+  "private": true,
+  "description": "GEO 网页模拟收录监测 — V1 平台采集诊断工具（豆包匿名）",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/cli.ts",
+    "serve": "tsx src/cli.ts --server",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/cli.js"
+  },
+  "dependencies": {
+    "express": "^5.2.1",
+    "playwright": "^1.47.0",
+    "sharp": "^0.33.5"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^22.7.4",
+    "tsx": "^4.19.1",
+    "typescript": "^5.6.2"
+  }
+}
