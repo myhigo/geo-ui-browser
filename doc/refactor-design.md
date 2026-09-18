@@ -112,6 +112,7 @@ CREATE TABLE platform_account (
   id                BIGINT AUTO_INCREMENT PRIMARY KEY,
   platform_id       VARCHAR(32)  NOT NULL COMMENT 'doubao/qwen/wenxiaoyan/deepseek/hunyuan',
   account_code      VARCHAR(64)  NOT NULL COMMENT 'doubao-1',
+  node_id           VARCHAR(64)  NOT NULL DEFAULT 'default' COMMENT '持有该账号 profile 的节点；挑号只挑本节点的账号',
   alias             VARCHAR(64)  COMMENT '备注',
   marker            VARCHAR(128) COMMENT '平台侧昵称（登录后抓取）',
   status            ENUM('none','waiting','active','cooling','failed') NOT NULL DEFAULT 'none',
@@ -129,7 +130,7 @@ CREATE TABLE platform_account (
   created_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   UNIQUE KEY uk_platform_code (platform_id, account_code),
-  KEY idx_pick (platform_id, status, enabled, leased_by, priority, last_used_at)
+  KEY idx_pick (node_id, platform_id, status, enabled, leased_by, priority, last_used_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ② 匿名身份/轮换计数（替换 qwen.json 与轮换 json）
@@ -162,7 +163,7 @@ CREATE TABLE login_session (
 ```sql
 -- 借：条件更新 + affectedRows 判成败
 UPDATE platform_account SET leased_by=?, leased_at=NOW()
- WHERE platform_id=? AND status='active' AND enabled=1 AND leased_by IS NULL
+ WHERE node_id=? AND platform_id=? AND status='active' AND enabled=1 AND leased_by IS NULL
  ORDER BY priority DESC, last_used_at IS NULL DESC, last_used_at ASC,
           today_queries ASC, consecutive_fails ASC
  LIMIT 1;
@@ -543,6 +544,25 @@ Playwright 侧：`launchPersistentContext(dir, { proxy: { server:'http://host:po
 健康检查：复用 `proxyTest` 的探测地址 `https://dev.kdlapi.com/testproxy`，验证可用并回读实际出口 IP。
 
 > ⚠️ 顺带：`ProxyUtils.java` 里 `proxyTest()` 硬编码了真实凭据（IP/端口/用户名/密码），且有无参 `getDpsWithOkHttp()` 带明文密钥，建议清理后提交。
+
+---
+
+#### 11.3.2 多机部署：共享台账 + 账号归属节点
+
+台账在 MySQL 里天然可被多台服务器共享，但**登录态（profile 目录）不共享**。
+若节点 B 挑到一个 profile 在节点 A 的账号，它本地没有该目录 → 打开即未登录 →
+`execute()` 会抛 401（现有防护不会让它静默匿名跑，但仍是一次失败采集）。
+
+**解法：账号带 `node_id`，挑号只挑本节点的账号**（见 §5 的 `node_id` 字段与借号 SQL）。
+一台机器上 `node_id` 相同 → 退化为单实例行为；将来扩多机，字段与过滤逻辑现成。
+
+**意外收益：多机 = 天然 IP 分散。** 每台服务器自带独立公网 IP，50 账号分散到 5 台即
+"5 个 IP × 10 账号"，风控压力远低于"1 个 IP 挤 50 账号"，且无需处理代理的粘性与有效期。
+成本上（¥200–600/月机器费）与买 10 个静态代理（¥300–1000/月）相当甚至更低。
+
+**⚠️ 多机的真正成本不在账号，在任务分配**：各节点同时 `pull` 会拉到同一批词 → 重复采集。
+需引入任务抢占（DB 标记 pending/running/done）或按 `keywordId` 取模分配，
+工作量大于账号归属，且会改变"不记执行进度"的现有口径。**一期不做**，但字段先留。
 
 ---
 
