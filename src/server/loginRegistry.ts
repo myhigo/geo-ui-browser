@@ -292,13 +292,14 @@ export function allocateAccount(platformId: string): ReadyCheck {
     };
   }
   const now = Date.now();
+  const today = todayStr();
   // score：最近使用越久越优先、今日查询越少越优先、连续失败惩罚、加抖动
   const scored = usable
     .map((a) => ({
       a,
       score:
         (now - (a.lastUsedAt ?? 0)) / 60000
-        - (a.todayQueries ?? 0) * 100
+        - (a.queryDate === today ? (a.todayQueries ?? 0) : 0) * 100
         - (a.consecutiveFails ?? 0) * 2000
         + Math.random() * 30,
     }))
