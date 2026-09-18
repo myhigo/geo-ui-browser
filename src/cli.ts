@@ -1,6 +1,8 @@
 import { runDiagnostic } from './diagnostics/run.js';
 import { startServer } from './server/server.js';
 import { LOGIN_DRIVERS, allocateAccount, releaseAccount } from './server/loginRegistry.js';
+import { config, paths } from './config/index.js';
+import path from 'path';
 
 const args = process.argv.slice(2);
 
@@ -8,17 +10,17 @@ const args = process.argv.slice(2);
 if (args.includes('--server')) {
   startServer();
 } else {
-  main();
+  void main();
 }
 
-function main(): void {
+async function main(): Promise<void> {
   const qi = args.indexOf('--question');
   const question =
     qi >= 0 && args[qi + 1] ? args[qi + 1] : '请介绍一下人工智能在医疗领域有哪些应用？';
 
   // 用本机已安装的 Chrome，避免 Playwright 自带 chromium（mac12 等旧系统无法下载）
-  const useSystemChrome = args.includes('--chrome') || process.env.GEO_USE_SYSTEM_CHROME === '1';
-  const executablePath = process.env.GEO_CHROME_PATH || undefined;
+  const useSystemChrome = args.includes('--chrome') || config.useSystemChrome;
+  const executablePath = config.chromePath;
 
   // 目标平台（默认 doubao；文心用 --platform wenxiaoyan）
   const pi = args.indexOf('--platform');
@@ -32,7 +34,7 @@ function main(): void {
   const profileArg =
     pfi >= 0 && args[pfi + 1] && !args[pfi + 1].startsWith('--') ? args[pfi + 1] : null;
   const userDataDir =
-    pfi >= 0 ? profileArg || `.profiles/${platform}` : process.env.GEO_PROFILE_DIR || undefined;
+    pfi >= 0 ? profileArg || path.join(paths.profilesRoot, platform) : process.env.GEO_PROFILE_DIR || undefined;
 
   // 检测到未登录时，等待人工在窗口内完成登录的秒数（默认 300s；0 = 不等待）。仅对持久 profile 生效。
   const wli = args.indexOf('--wait-login');
@@ -58,7 +60,7 @@ function main(): void {
   let execDir = userDataDir;
   let execWaitLoginMs = waitLoginMs;
   if (driver && pfi < 0) {
-    const ready = allocateAccount(platform);
+    const ready = await allocateAccount(platform);
     if (!ready.ok || !ready.accountId || !ready.dir) {
       console.error(`❌ ${ready.reason ?? '没有可用的台账账号'}`);
       process.exit(1);
@@ -78,9 +80,9 @@ function main(): void {
     userDataDir: execDir,
     waitLoginMs: execWaitLoginMs,
   })
-    .then((result) => {
+    .then(async (result) => {
       if (allocated) {
-        releaseAccount(
+        await releaseAccount(
           allocated.platformId,
           allocated.accountId,
           !!result.answerText && !result.loginRequired,
@@ -89,8 +91,8 @@ function main(): void {
       }
       process.exit(0);
     })
-    .catch((e) => {
-      if (allocated) releaseAccount(allocated.platformId, allocated.accountId, false, false);
+    .catch(async (e) => {
+      if (allocated) await releaseAccount(allocated.platformId, allocated.accountId, false, false);
       console.error(e);
       process.exit(1);
     });

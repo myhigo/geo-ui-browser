@@ -14,6 +14,7 @@
 import fs from 'fs';
 import path from 'path';
 import { withConcurrencyLimit } from './concurrency.js';
+import { paths } from '../config/index.js';
 
 /** 主 JSON 文件的元素结构（严格三字段，契约不要随意加字段） */
 export interface SourceStat {
@@ -79,7 +80,7 @@ export interface AnalysisCollect {
   }>;
 }
 
-export const ANALYSIS_ROOT = path.resolve('analysis');
+export const ANALYSIS_ROOT = paths.analysisRoot;
 
 // 域名 → 中文站名兜底（平台没返回媒体名时用）。常见中文站点为主，不够就加。
 const BUILTIN_SITE_NAMES: Record<string, string> = {
@@ -114,7 +115,7 @@ const BUILTIN_SITE_NAMES: Record<string, string> = {
 function loadSiteNames(): Record<string, string> {
   const map: Record<string, string> = { ...BUILTIN_SITE_NAMES };
   try {
-    const f = path.resolve('site-names.json');
+    const f = paths.siteNamesFile;
     if (fs.existsSync(f)) Object.assign(map, JSON.parse(fs.readFileSync(f, 'utf-8')));
   } catch {
     /* 外部映射表缺失/格式错 → 只用内置表 */

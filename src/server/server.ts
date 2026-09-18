@@ -30,9 +30,11 @@ import {
   updateAlias,
 } from './loginRegistry.js';
 import { adminPageHtml } from './loginUI.js';
+import { config, paths, describeConfig } from '../config/index.js';
+import { identityRepo } from '../storage/identityRepo.js';
 
-const PORT = 8787;
-const TIMEOUT_MS = 3 * 60 * 1000;
+const PORT = config.port;
+const TIMEOUT_MS = config.timeoutMs;
 
 // 平台标识统一为下层 modeId（qwen/wenxiaoyan/hunyuan/doubao/deepseek），对外接口直接透传，
 // 不再做别名映射（2026-09-08 对齐：消除双命名导致的回推错位 bug）。
@@ -70,74 +72,66 @@ class ApiError extends Error {
 //    的软阈值出现前就刷新，避免被标记。⚠️ 教训：不做多身份轮换——同 IP 快速轮换触发风控短限
 //    （12:34 实测连新身份都要登录；12:40 冷却后单个干净匿名身份直接可用）。单身份低频清 cookie 最像真人。
 const ROTATIONS: Record<string, { dir: string; quota: number }> = {
-  wenxiaoyan: { dir: '.profiles/wenxiaoyan-rotating', quota: 4 },
+  wenxiaoyan: { dir: path.join(paths.profilesRoot, 'wenxiaoyan-rotating'), quota: 4 },
 };
 // 撞墙才重生的平台（不预清空，撞登录墙时清空 + 自动重试一次）
 const REACTIVE_RESET_PLATFORMS = new Set(['qwen']);
-const QWEN_PROFILE_DIR = '.profiles/qwen';
+const QWEN_PROFILE_DIR = path.join(paths.profilesRoot, 'qwen');
 // 千问匿名身份阈值：约 5 个新对话后平台弹登录提示（软阈值，不一定阻断回答），达到即主动清空重生，
 // 避免提示出现——也契合「约 5 问一次清 cookie」的设计意图（非多身份轮换，单身份低频清 cookie 不触发风控）。
 const QIANWEN_CONVERSATION_LIMIT = 5;
-const QWEN_STATE_FILE = `${QWEN_PROFILE_DIR}.json`;
+const QWEN_COUNT_KEY = 'qwen-conv-count';
 
-function readQwenCount(): number {
-  try {
-    return (JSON.parse(fs.readFileSync(QWEN_STATE_FILE, 'utf-8')) as { count: number }).count ?? 0;
-  } catch {
-    return 0;
-  }
+async function readQwenCount(): Promise<number> {
+  const st = await identityRepo.get(QWEN_COUNT_KEY);
+  return (st?.count as number) ?? 0;
 }
-function writeQwenCount(n: number): void {
-  fs.mkdirSync(path.dirname(QWEN_STATE_FILE), { recursive: true });
-  fs.writeFileSync(QWEN_STATE_FILE, JSON.stringify({ count: n }));
+
+async function writeQwenCount(n: number): Promise<void> {
+  await identityRepo.set(QWEN_COUNT_KEY, { count: n });
 }
-function resetQwenIdentity(reason: string): void {
+
+async function resetQwenIdentity(reason: string): Promise<void> {
   fs.rmSync(QWEN_PROFILE_DIR, { recursive: true, force: true });
-  writeQwenCount(0);
+  await writeQwenCount(0);
   console.log(`[qwen身份] ${reason}`);
 }
 
 type RotationState = { count: number };
 
-function stateFileOf(dir: string): string {
-  return `${dir}.json`;
+const rotationKeyOf = (dir: string): string => `rotation:${dir}`;
+
+async function readRotationState(dir: string): Promise<RotationState> {
+  const st = await identityRepo.get(rotationKeyOf(dir));
+  return (st as RotationState | null) ?? { count: 0 };
 }
 
-function readRotationState(dir: string): RotationState {
-  try {
-    return JSON.parse(fs.readFileSync(stateFileOf(dir), 'utf-8')) as RotationState;
-  } catch {
-    return { count: 0 };
-  }
-}
-
-function writeRotationState(dir: string, s: RotationState): void {
-  fs.mkdirSync(path.dirname(stateFileOf(dir)), { recursive: true });
-  fs.writeFileSync(stateFileOf(dir), JSON.stringify(s));
+async function writeRotationState(dir: string, s: RotationState): Promise<void> {
+  await identityRepo.set(rotationKeyOf(dir), s as unknown as Record<string, unknown>);
 }
 
 // 取身份：计数到额度 → 清空 profile 目录（新身份）并归零
-function acquireIdentity(platform: string): void {
+async function acquireIdentity(platform: string): Promise<void> {
   const cfg = ROTATIONS[platform];
-  const st = readRotationState(cfg.dir);
+  const st = await readRotationState(cfg.dir);
   if (st.count >= cfg.quota) {
     fs.rmSync(cfg.dir, { recursive: true, force: true });
-    writeRotationState(cfg.dir, { count: 0 });
+    await writeRotationState(cfg.dir, { count: 0 });
     console.log(`[${platform}身份] 已用满 ${cfg.quota} 次，清空 storage 重生匿名身份`);
   }
 }
 
 // 归还身份：计数 +1；撞到登录墙（异常消耗/口径变化）→ 立即清空重生，不等计数
-function releaseIdentity(platform: string, loginRequired: boolean): void {
+async function releaseIdentity(platform: string, loginRequired: boolean): Promise<void> {
   const cfg = ROTATIONS[platform];
   if (loginRequired) {
     fs.rmSync(cfg.dir, { recursive: true, force: true });
-    writeRotationState(cfg.dir, { count: 0 });
+    await writeRotationState(cfg.dir, { count: 0 });
     console.log(`[${platform}身份] 检测到登录墙，提前清空 storage 重生匿名身份`);
     return;
   }
-  const st = readRotationState(cfg.dir);
-  writeRotationState(cfg.dir, { count: st.count + 1 });
+  const st = await readRotationState(cfg.dir);
+  await writeRotationState(cfg.dir, { count: st.count + 1 });
 }
 
 // 组装响应：截图 base64 + 回答 + 信源
@@ -146,7 +140,7 @@ export async function execute(
   keyword: string,
   headed: boolean
 ): Promise<{ screenshot: string; answer: string; sources: { title: string; url: string; siteName: string }[] }> {
-  let userDataDir: string | undefined = `.profiles/${platform}`;
+  let userDataDir: string | undefined = path.join(paths.profilesRoot, platform);
   let waitLoginMs = 0;
   let ledgerAccountId: string | undefined;
   // 登录制平台统一走 /admin 账号台账（与 cli.ts:56 同一套逻辑，避免"CLI 能跑、服务端拿不到账号"）。
@@ -158,13 +152,13 @@ export async function execute(
   const rotation = isLoginPlatform ? undefined : ROTATIONS[platform];
   const reactive = isLoginPlatform ? false : REACTIVE_RESET_PLATFORMS.has(platform);
   if (loginDriver?.loginRequired) {
-    const ready = allocateAccount(platform);
+    const ready = await allocateAccount(platform);
     if (!ready.ok) throw new ApiError(409, ready.reason ?? `${platform} 没有可用登录账号`);
     ledgerAccountId = ready.accountId;
     userDataDir = ready.dir;
     waitLoginMs = 0;
   } else if (rotation) {
-    acquireIdentity(platform);
+    await acquireIdentity(platform);
     userDataDir = rotation.dir;
   } else if (reactive) {
     userDataDir = QWEN_PROFILE_DIR;
@@ -173,14 +167,15 @@ export async function execute(
   }
   let result = await runDiagnostic(keyword, {
     platform,
-    useSystemChrome: true,
+    useSystemChrome: config.useSystemChrome,
+    executablePath: config.chromePath,
     userDataDir,
     headless: !headed,
     waitLoginMs,
   });
-  if (rotation) releaseIdentity(platform, result.loginRequired);
+  if (rotation) await releaseIdentity(platform, result.loginRequired);
   if (ledgerAccountId) {
-    releaseAccount(platform, ledgerAccountId, !!result.answerText && !result.loginRequired, result.loginRequired);
+    await releaseAccount(platform, ledgerAccountId, !!result.answerText && !result.loginRequired, result.loginRequired);
     // ⚠️ 登录平台：打开登录账号目录后仍检测到登录墙（磁盘登录态失效/从未落盘）→ 明确失败并提示重登，
     // 绝不默默以匿名/未登录态跑完冒充成功（2026-09-07 文心实测：登录目录无 BDUSS，整轮匿名问答还报 ok）。
     // 上面 releaseAccount 的 loginRequired=true 分支已把该账号标 failed，此处抛错终止本轮。
@@ -194,20 +189,21 @@ export async function execute(
   // 千问：单一匿名持久身份。①撞登录墙 → 清空重生并自动重试；②成功对话累计到阈值 → 主动清空重生，避免触发登录提示
   if (reactive) {
     if (result.loginRequired) {
-      resetQwenIdentity('撞登录墙，重置匿名身份并自动重试一次');
+      await resetQwenIdentity('撞登录墙，重置匿名身份并自动重试一次');
       result = await runDiagnostic(keyword, {
         platform,
-        useSystemChrome: true,
+        useSystemChrome: config.useSystemChrome,
+        executablePath: config.chromePath,
         userDataDir: QWEN_PROFILE_DIR,
         headless: !headed,
         waitLoginMs: 0,
       });
     } else if (result.answerText) {
-      const c = readQwenCount() + 1;
+      const c = (await readQwenCount()) + 1;
       if (c >= QIANWEN_CONVERSATION_LIMIT) {
-        resetQwenIdentity(`已用满 ${QIANWEN_CONVERSATION_LIMIT} 个匿名对话，提前清空重生（避免触发登录提示）`);
+        await resetQwenIdentity(`已用满 ${QIANWEN_CONVERSATION_LIMIT} 个匿名对话，提前清空重生（避免触发登录提示）`);
       } else {
-        writeQwenCount(c);
+        await writeQwenCount(c);
       }
     }
   }
@@ -298,7 +294,7 @@ app.post('/api/web-collect', (req, res) => {
 // 对方服务地址优先级：/api/pull/run 请求体 pullHost（admin 页可填，默认 http://127.0.0.1:8101）
 //                  > 环境变量 GEO_PULL_HOST（服务启动时注入，作默认兜底）。
 // 时间范围 startTime/endTime 由请求体透传（可选），不带则拉全部。
-const envPullHost = process.env.GEO_PULL_HOST?.trim() || '';
+const envPullHost = config.pullHost;
 
 const pullStatus = {
   running: false,
@@ -497,11 +493,11 @@ app.get('/admin', (_req, res) => {
   res.type('html').send(adminPageHtml());
 });
 
-app.get('/api/login/platforms', (_req, res) => {
+app.get('/api/login/platforms', async (_req, res) => {
   const busy = loginBusy();
   const testing = new Set(listTestSessions());
   res.status(200).json({
-    platforms: listViews().map((p) => ({
+    platforms: (await listViews()).map((p) => ({
       platformId: p.platformId,
       label: p.label,
       hint: p.hint,
@@ -559,29 +555,29 @@ app.post('/api/login/:platform/verify', async (req, res) => {
   res.status(r.ok ? 200 : 400).json({ msg: r.msg });
 });
 
-app.post('/api/login/:platform/logout', (req, res) => {
+app.post('/api/login/:platform/logout', async (req, res) => {
   const id = String(req.params.platform).toLowerCase();
   const accountId = bodyAccountId(req);
   if (!accountId) {
     res.status(400).json({ msg: '缺少 accountId' });
     return;
   }
-  const r = logoutAccount(id, accountId);
+  const r = await logoutAccount(id, accountId);
   res.status(r.ok ? 200 : 400).json({ msg: r.msg });
 });
 
-app.post('/api/login/:platform/delete', (req, res) => {
+app.post('/api/login/:platform/delete', async (req, res) => {
   const id = String(req.params.platform).toLowerCase();
   const accountId = bodyAccountId(req);
   if (!accountId) {
     res.status(400).json({ msg: '缺少 accountId' });
     return;
   }
-  const r = deleteAccount(id, accountId);
+  const r = await deleteAccount(id, accountId);
   res.status(r.ok ? 200 : 400).json({ msg: r.msg });
 });
 
-app.post('/api/login/:platform/alias', (req, res) => {  const id = String(req.params.platform).toLowerCase();
+app.post('/api/login/:platform/alias', async (req, res) => {  const id = String(req.params.platform).toLowerCase();
   const accountId = bodyAccountId(req);
   const b = (req.body ?? {}) as Record<string, unknown>;
   const alias = typeof b.alias === 'string' ? b.alias.trim().slice(0, 30) : '';
@@ -589,7 +585,7 @@ app.post('/api/login/:platform/alias', (req, res) => {  const id = String(req.pa
     res.status(400).json({ msg: '缺少 accountId/alias' });
     return;
   }
-  const r = updateAlias(id, accountId, alias);
+  const r = await updateAlias(id, accountId, alias);
   res.status(r.ok ? 200 : 400).json({ msg: r.msg });
 });
 
@@ -625,5 +621,6 @@ app.post('/api/login/:platform/test-close', (req, res) => {
 
 // 启动 API 服务（按用户要求：启动时不打印日志）
 export function startServer(): void {
+  console.log(`[config] ${describeConfig()}`);
   app.listen(PORT);
 }

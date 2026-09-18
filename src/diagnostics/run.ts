@@ -15,6 +15,8 @@ import { probeElements } from './elementProbe.js';
 import { DiagnosticResult, ElementDiagnosisItem, SourceInfo, ScreenshotMode } from '../types.js';
 // 登录制平台判据与昵称抽取（供"无墙平台真登录态探测"用；loginRegistry 不反向依赖 run.ts，无循环）
 import { LOGIN_DRIVERS, extractAccountMarker } from '../server/loginRegistry.js';
+import { config } from '../config/index.js';
+import { fingerprint, Fingerprint } from '../config/fingerprint.js';
 
 function ts(): string {
   const d = new Date();
@@ -88,7 +90,8 @@ export async function runDiagnostic(
   const def: PlatformDef = resolvePlatform(opts.platform || 'doubao');
   const url = opts.url || def.defaultUrl;
 
-  const headless = opts.headless ?? process.env.GEO_HEADLESS === '1';
+  const fp = fingerprint();
+  const headless = opts.headless ?? config.headless;
   const launchOpts: {
     headless: boolean;
     slowMo: number;
@@ -105,9 +108,11 @@ export async function runDiagnostic(
     // 去掉 Playwright 默认注入的 --enable-automation（会留下 cdc_ 钩子与 webdriver 标记）
     ignoreDefaultArgs: ['--enable-automation'],
   };
-  if (opts.executablePath) {
-    launchOpts.executablePath = opts.executablePath;
-  } else if (opts.useSystemChrome) {
+  const exePath = opts.executablePath ?? config.chromePath;
+  const useSystem = opts.useSystemChrome ?? config.useSystemChrome;
+  if (exePath) {
+    launchOpts.executablePath = exePath;
+  } else if (useSystem) {
     launchOpts.channel = 'chrome';
   }
   const stamp = ts(); // YYYY-MM-DD_HH-MM-SS（报告内时间字段）
@@ -127,11 +132,14 @@ export async function runDiagnostic(
   [dirS, dirP, dirN].forEach((d) => fs.mkdirSync(d, { recursive: true }));
 
   const contextOpts: Parameters<Browser['newContext']>[0] = {
-    viewport: { width: 1280, height: 800 },
+    viewport: fp.viewport,
+    locale: fp.locale,
+    timezoneId: fp.timezoneId,
+    deviceScaleFactor: fp.deviceScaleFactor,
     acceptDownloads: false, // 不触发任何下载行为，避免系统下载条/对话框
     recordHar: { path: path.join(dirN, 'network.har') },
-    userAgent:
-      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
+    // ⚠️ 不再硬编码 macOS UA（与 Linux 服务器矛盾 = 主动暴露），改为按实际 Chrome 版本动态拼接
+    userAgent: fp.userAgent,
   };
   // 登录态：给了 profile 目录就走持久上下文（登录态落盘，下次复用）；否则仍是临时匿名上下文。
   // ⚠️ 两种模式共用的只有「上下文选项」，浏览器实例与关闭顺序不同，故分开建。
@@ -152,7 +160,7 @@ export async function runDiagnostic(
   // 抹掉 webdriver 标记并补全几处真实桌面浏览器应有的字段，降低阿里等风控的环境判定。
   // ⚠️ 只是"看起来像真人浏览器"，**不破解/不绕过**任何验证码或登录。
   await context
-    .addInitScript(() => {
+    .addInitScript((f: Fingerprint) => {
       try {
         Object.defineProperty(navigator, 'webdriver', { get: () => undefined, configurable: true });
       } catch {
@@ -167,12 +175,12 @@ export async function runDiagnostic(
         /* ignore */
       }
       try {
-        Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8, configurable: true });
+        Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => f.hardwareConcurrency, configurable: true });
       } catch {
         /* ignore */
       }
       try {
-        Object.defineProperty(navigator, 'deviceMemory', { get: () => 8, configurable: true });
+        Object.defineProperty(navigator, 'deviceMemory', { get: () => f.deviceMemory, configurable: true });
       } catch {
         /* ignore */
       }
@@ -184,7 +192,7 @@ export async function runDiagnostic(
       } catch {
         /* ignore */
       }
-    })
+    }, fp)
     .catch(() => {});
   // 持久上下文（launchPersistentContext，走台账/登录 profile 时）自带一个初始空白标签页，
   // 直接复用它，避免出现「一个 blank + 一个业务页」两个标签。

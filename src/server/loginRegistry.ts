@@ -11,26 +11,11 @@ import path from 'path';
 import { DoubaoAdapter } from '../platforms/doubao/DoubaoAdapter.js';
 import { resolvePlatform } from '../platforms/index.js';
 import { firstFound } from '../diagnostics/elementProbe.js';
+import { accountRepo, profileDirOf, Account, AccountStatus } from '../storage/accountRepo.js';
+import { config, paths } from '../config/index.js';
+import { fingerprint } from '../config/fingerprint.js';
 
-export type AccountStatus = 'none' | 'waiting' | 'active' | 'cooling' | 'failed';
-
-export interface Account {
-  id: string;
-  /** 专属 profile 目录（绝对路径） */
-  dir: string;
-  /** 用户备注，防混用（如：主号尾号1234） */
-  alias?: string;
-  /** 登录后尝试从页面抓取的账号标识（昵称/头像 alt 等），best-effort */
-  marker?: string;
-  status: AccountStatus;
-  note?: string;
-  createdAt?: number;
-  lastUsedAt?: number;
-  todayQueries?: number;
-  /** 最后更新 todayQueries 的本地日期 YYYY-MM-DD，用于跨天自动归零 */
-  queryDate?: string;
-  consecutiveFails?: number;
-}
+export type { Account, AccountStatus };
 
 export interface PlatformLoginDriver {
   platformId: string;
@@ -127,9 +112,6 @@ export const LOGIN_DRIVERS: Record<string, PlatformLoginDriver> = {
   },
 };
 
-const ledgerFileOf = (platformId: string): string => path.resolve(`.profiles/${platformId}.accounts.json`);
-const legacyStateFileOf = (platformId: string): string => path.resolve(`.profiles/${platformId}.login.json`);
-const dirOf = (platformId: string, seq: number): string => path.resolve(`.profiles/${platformId}-${seq}`);
 const nextSeqOf = (platformId: string, accounts: Account[]): number => {
   let max = 0;
   for (const a of accounts) {
@@ -146,64 +128,6 @@ const todayStr = (): string => {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 };
 
-// ---------- 台账读写（含旧版单身份迁移） ----------
-function readLedger(platformId: string): Account[] {
-  const file = ledgerFileOf(platformId);
-  try {
-    return JSON.parse(fs.readFileSync(file, 'utf-8')) as Account[];
-  } catch {
-    /* 无台账 → 尝试迁移旧单身份文件 */
-  }
-  const legacy = legacyStateFileOf(platformId);
-  let migrated: Account[] = [];
-  try {
-    const old = JSON.parse(fs.readFileSync(legacy, 'utf-8')) as {
-      status?: string;
-      note?: string;
-      createdAt?: number;
-      lastUsedAt?: number;
-      todayQueries?: number;
-      consecutiveFails?: number;
-    };
-    const seq = nextSeqOf(platformId, []);
-    const acc: Account = {
-      id: `${platformId}-${seq}`,
-      dir: path.resolve(`.profiles/${platformId}`), // 旧版目录就是平台名，保持不搬动
-      alias: '账号1',
-      status: (['active', 'failed', 'cooling'].includes(old.status ?? '') ? old.status : 'none') as AccountStatus,
-      note: old.note,
-      createdAt: old.createdAt,
-      lastUsedAt: old.lastUsedAt,
-      todayQueries: old.todayQueries ?? 0,
-      consecutiveFails: old.consecutiveFails ?? 0,
-    };
-    migrated = [acc];
-    fs.rmSync(legacy, { force: true }); // 迁移完成删除旧文件
-    writeLedger(platformId, migrated);
-  } catch {
-    migrated = [];
-  }
-  return migrated;
-}
-
-function writeLedger(platformId: string, accounts: Account[]): void {
-  fs.mkdirSync(path.dirname(ledgerFileOf(platformId)), { recursive: true });
-  fs.writeFileSync(ledgerFileOf(platformId), JSON.stringify(accounts, null, 2));
-}
-
-function getAccount(platformId: string, accountId: string): Account | undefined {
-  return readLedger(platformId).find((a) => a.id === accountId);
-}
-
-function patchAccount(platformId: string, accountId: string, patch: Partial<Account>): Account | undefined {
-  const accounts = readLedger(platformId);
-  const idx = accounts.findIndex((a) => a.id === accountId);
-  if (idx < 0) return undefined;
-  accounts[idx] = { ...accounts[idx], ...patch };
-  writeLedger(platformId, accounts);
-  return accounts[idx];
-}
-
 export interface PlatformView {
   platformId: string;
   label: string;
@@ -211,42 +135,46 @@ export interface PlatformView {
   accounts: Account[];
 }
 
-export function listViews(): PlatformView[] {
+export async function listViews(): Promise<PlatformView[]> {
   const today = todayStr();
-  return Object.values(LOGIN_DRIVERS).map((d) => ({
-    platformId: d.platformId,
-    label: d.label,
-    hint: d.hint,
-    // 跨天惰性归零：queryDate 不是今天 → 显示 0（今天还没查过，昨天的次数作废）
-    accounts: readLedger(d.platformId).map((a) => ({
-      ...a,
-      todayQueries: a.queryDate === today ? (a.todayQueries ?? 0) : 0,
-    })),
-  }));
+  const out: PlatformView[] = [];
+  for (const d of Object.values(LOGIN_DRIVERS)) {
+    out.push({
+      platformId: d.platformId,
+      label: d.label,
+      hint: d.hint,
+      // 跨天惰性归零：queryDate 不是今天 → 显示 0（今天还没查过，昨天的次数作废）
+      accounts: (await accountRepo.list(d.platformId)).map((a) => ({
+        ...a,
+        todayQueries: a.queryDate === today ? (a.todayQueries ?? 0) : 0,
+      })),
+    });
+  }
+  return out;
 }
 
-export function updateAlias(platformId: string, accountId: string, alias: string): { ok: boolean; msg: string } {
-  if (!patchAccount(platformId, accountId, { alias })) return { ok: false, msg: '账号不存在' };
+export async function updateAlias(platformId: string, accountId: string, alias: string): Promise<{ ok: boolean; msg: string }> {
+  if (!await accountRepo.patch(platformId, accountId, { alias })) return { ok: false, msg: '账号不存在' };
   return { ok: true, msg: '备注已更新' };
 }
 
 /** 删除整个账号（清目录 + 台账移除） */
-export function deleteAccount(platformId: string, accountId: string): { ok: boolean; msg: string } {
-  const acc = getAccount(platformId, accountId);
+export async function deleteAccount(platformId: string, accountId: string): Promise<{ ok: boolean; msg: string }> {
+  const acc = await accountRepo.get(platformId, accountId);
   if (!acc) return { ok: false, msg: '账号不存在' };
   if (isAccountBusy(accountId) || testSessions.has(testKey(platformId, accountId)))
     return { ok: false, msg: '该账号正在使用中（采集中或测试窗口打开），请先关闭测试窗口后再删' };
   fs.rmSync(acc.dir, { recursive: true, force: true });
-  writeLedger(
+  await accountRepo.save(
     platformId,
-    readLedger(platformId).filter((a) => a.id !== accountId)
+    (await accountRepo.list(platformId)).filter((a) => a.id !== accountId)
   );
   return { ok: true, msg: `已删除账号 ${accountId}` };
 }
 
 /** 退出登录（清掉磁盘会话 + 关闭仍打开的登录窗口；台账保留、其他账号不受影响） */
-export function logoutAccount(platformId: string, accountId: string): { ok: boolean; msg: string } {
-  const acc = getAccount(platformId, accountId);
+export async function logoutAccount(platformId: string, accountId: string): Promise<{ ok: boolean; msg: string }> {
+  const acc = await accountRepo.get(platformId, accountId);
   if (!acc) return { ok: false, msg: '账号不存在' };
   if (isAccountBusy(accountId) || testSessions.has(testKey(platformId, accountId)))
     return { ok: false, msg: '该账号正在使用中（采集中或测试窗口打开），请先关闭测试窗口后再退出' };
@@ -259,7 +187,7 @@ export function logoutAccount(platformId: string, accountId: string): { ok: bool
     activeLogin = null;
   }
   fs.rmSync(acc.dir, { recursive: true, force: true });
-  patchAccount(platformId, accountId, { status: 'none', note: '已退出登录', marker: undefined, lastUsedAt: undefined });
+  await accountRepo.patch(platformId, accountId, { status: 'none', note: '已退出登录', marker: undefined, lastUsedAt: undefined });
   return { ok: true, msg: `已退出 ${accountId}，登录态已清除` };
 }
 
@@ -278,8 +206,8 @@ export interface ReadyCheck {
 }
 
 /** 分配一个可用的已登录账号（只挑 active 且空闲；无可用 → 返回原因） */
-export function allocateAccount(platformId: string): ReadyCheck {
-  const accounts = readLedger(platformId);
+export async function allocateAccount(platformId: string): Promise<ReadyCheck> {
+  const accounts = await accountRepo.list(platformId);
   const usable = accounts.filter((a) => a.status === 'active' && !isAccountBusy(a.id));
   if (usable.length === 0) {
     const any = accounts.some((a) => ['failed', 'cooling', 'none'].includes(a.status));
@@ -309,9 +237,9 @@ export function allocateAccount(platformId: string): ReadyCheck {
   return { ok: true, accountId: pick.id, dir: pick.dir };
 }
 
-export function releaseAccount(platformId: string, accountId: string, success: boolean, loginRequired: boolean): void {
+export async function releaseAccount(platformId: string, accountId: string, success: boolean, loginRequired: boolean): Promise<void> {
   inFlight.delete(accountId);
-  const acc = getAccount(platformId, accountId);
+  const acc = await accountRepo.get(platformId, accountId);
   if (!acc) return;
   const patch: Partial<Account> = { lastUsedAt: Date.now() };
   if (loginRequired) {
@@ -326,7 +254,7 @@ export function releaseAccount(platformId: string, accountId: string, success: b
     patch.todayQueries = base + 1;
     patch.queryDate = today;
   }
-  patchAccount(platformId, accountId, patch);
+  await accountRepo.patch(platformId, accountId, patch);
 }
 
 // ---------- 登录会话（同一时刻只允许一个平台的一个账号在登） ----------
@@ -345,15 +273,17 @@ export function loginBusy(): { platformId?: string; accountId?: string } {
 }
 
 function launchOpts(): Parameters<typeof chromium.launchPersistentContext>[1] {
-  return {
+  const fp = fingerprint();
+  const o: Parameters<typeof chromium.launchPersistentContext>[1] = {
     headless: false,
-    channel: 'chrome',
     args: ['--disable-blink-features=AutomationControlled'],
     ignoreDefaultArgs: ['--enable-automation'],
-    viewport: { width: 1280, height: 800 },
-    userAgent:
-      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
+    viewport: fp.viewport,
+    userAgent: fp.userAgent,
   };
+  if (config.chromePath) o.executablePath = config.chromePath;
+  else if (config.useSystemChrome) o.channel = 'chrome';
+  return o;
 }
 
 /** 抓取账号昵称：①驱动自带 fetchMarker（页面无昵称元素时走接口）②markerSelector。
@@ -518,7 +448,7 @@ export async function startLogin(
   if (activeLogin) {
     return { ok: false, msg: `已有登录会话进行中（${activeLogin.platformId}/${activeLogin.accountId}），请先完成或等待超时` };
   }
-  let accounts = readLedger(platformId);
+  let accounts = await accountRepo.list(platformId);
   let acc: Account;
   if (accountId) {
     acc = accounts.find((a) => a.id === accountId)!;
@@ -529,14 +459,14 @@ export async function startLogin(
     const seq = nextSeqOf(platformId, accounts);
     acc = {
       id: `${platformId}-${seq}`,
-      dir: dirOf(platformId, seq),
+      dir: profileDirOf(platformId, seq),
       alias: `账号${seq}`,
       status: 'none',
     };
     accounts.push(acc);
-    writeLedger(platformId, accounts);
+    await accountRepo.save(platformId, accounts);
   }
-  patchAccount(platformId, acc.id, { status: 'waiting', note: `登录窗口已打开，等待人工操作（${acc.id}）` });
+  await accountRepo.patch(platformId, acc.id, { status: 'waiting', note: `登录窗口已打开，等待人工操作（${acc.id}）` });
   const waitMs = driver.loginWaitMs ?? 6 * 60 * 1000;
 
   const task = (async () => {
@@ -544,7 +474,7 @@ export async function startLogin(
     try {
       context = await chromium.launchPersistentContext(acc.dir, launchOpts());
     } catch (e) {
-      patchAccount(platformId, acc.id, { status: 'failed', note: `打开登录窗口失败：${(e as Error).message}` });
+      await accountRepo.patch(platformId, acc.id, { status: 'failed', note: `打开登录窗口失败：${(e as Error).message}` });
       return;
     }
     let confirmResolve: (v: boolean) => void = () => {};
@@ -561,13 +491,13 @@ export async function startLogin(
       ]);
       done = waited;
     } catch (e) {
-      patchAccount(platformId, acc.id, { status: 'failed', note: `登录窗口异常：${(e as Error).message}` });
+      await accountRepo.patch(platformId, acc.id, { status: 'failed', note: `登录窗口异常：${(e as Error).message}` });
     } finally {
       activeLogin = null;
       await context.close().catch(() => {});
     }
     // 登录进行中账号被主动退出（logoutAccount 已把状态置 none、删目录）——不再回写登录结果，避免覆盖成 failed
-    if (getAccount(platformId, acc.id)?.status === 'none') {
+    if ((await accountRepo.get(platformId, acc.id))?.status === 'none') {
       return;
     }
     if (done) {
@@ -582,7 +512,7 @@ export async function startLogin(
         const marker = (domMarker ?? v.marker ?? '').trim();
         // 昵称串号护栏：本次昵称与历史不一致（且历史有值）→ 明确警示
         const changed = !!(acc.marker && marker && acc.marker !== marker);
-        patchAccount(platformId, acc.id, {
+        await accountRepo.patch(platformId, acc.id, {
           status: 'active',
           note: changed
             ? `昵称变化：${acc.marker} → ${marker}（确认是否登成了别的号）`
@@ -597,13 +527,13 @@ export async function startLogin(
         });
       } else {
         // 磁盘还原失败 → 登录态未真正持久化，明确标 failed，绝不凭窗口 DOM 昵称标 active
-        patchAccount(platformId, acc.id, {
+        await accountRepo.patch(platformId, acc.id, {
           status: 'failed',
           note: `登录态未持久化到磁盘（窗口内已登录但无头重开仍是登录墙）：${v.note ?? ''}`,
         });
       }
     } else {
-      patchAccount(platformId, acc.id, { status: 'failed', note: '登录等待超时，未完成登录' });
+      await accountRepo.patch(platformId, acc.id, { status: 'failed', note: '登录等待超时，未完成登录' });
     }
   })();
   void task;
@@ -725,7 +655,7 @@ export async function testAccount(
 ): Promise<{ ok: boolean; msg: string }> {
   const driver = LOGIN_DRIVERS[platformId];
   if (!driver) return { ok: false, msg: `未注册的登录平台：${platformId}` };
-  const acc = getAccount(platformId, accountId);
+  const acc = await accountRepo.get(platformId, accountId);
   if (!acc) return { ok: false, msg: `账号不存在：${accountId}` };
   // 只有处于登录态的账号才能测试（none=未登录 / waiting=登录中 / failed=不可用 一律禁止）
   if (acc.status !== 'active' && acc.status !== 'cooling') {

@@ -22,6 +22,12 @@ src/
     <平台>/{Adapter,selectors}.ts
   tuning/delays.ts         拟人化停顿参数（按「平台+用途」独立命名，暂不归并）
   diagnostics/             run.ts(编排) / elementProbe.ts / human.ts
+  config/
+    index.ts               环境变量集中读取 + paths（dataRoot 下所有有状态目录）
+    fingerprint.ts         浏览器指纹：UA 按实际 Chrome 版本动态拼接，登录/采集共用
+  storage/
+    accountRepo.ts         账号台账仓储（接口异步；P2 换 MySQL 实现即可）
+    identityRepo.ts        匿名身份/轮换计数键值仓储（P2 换 identity_state 表）
 ```
 
 **平台 id 即对外的 modeId**（`qwen` / `wenxiaoyan` / `doubao` / `deepseek` / `hunyuan`），不做别名映射（曾因双命名导致回推错位 bug）。
@@ -117,8 +123,8 @@ GEO_PROXY_USER / _PASS / _HEALTHCHECK / _BIND_TTL_HOURS
 
 | 阶段 | 内容 | 状态 |
 |---|---|---|
-| P0 | 复制 diagnostics + loginRegistry 修复，让代码能编译 | 待开始 |
-| P1 | config/storage 层；统一 fingerprint；删 macOS UA | 待开始 |
+| P0 | 复制 diagnostics + loginRegistry 修复，让代码能编译 | ✅ 已完成 |
+| P1 | config/storage 层；统一 fingerprint；删 macOS UA | ✅ 已完成 |
 | P2 | MySQL 表 + repo + 迁移 | 待开始 |
 | P3 | /admin 增强（启停/置顶/切换）+ noVNC 内嵌 | 待开始 |
 | P3.5 | 出口 IP 调度（egress 信号量）+ 风控监控 | 待开始 |
