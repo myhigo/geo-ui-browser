@@ -31,6 +31,7 @@ import {
 } from './loginRegistry.js';
 import { adminPageHtml } from './loginUI.js';
 import { config, paths, describeConfig } from '../config/index.js';
+import { pingDb, releaseStaleLeases } from '../db/pool.js';
 import { identityRepo } from '../storage/identityRepo.js';
 
 const PORT = config.port;
@@ -83,12 +84,12 @@ const QIANWEN_CONVERSATION_LIMIT = 5;
 const QWEN_COUNT_KEY = 'qwen-conv-count';
 
 async function readQwenCount(): Promise<number> {
-  const st = await identityRepo.get(QWEN_COUNT_KEY);
+  const st = await identityRepo().get(QWEN_COUNT_KEY);
   return (st?.count as number) ?? 0;
 }
 
 async function writeQwenCount(n: number): Promise<void> {
-  await identityRepo.set(QWEN_COUNT_KEY, { count: n });
+  await identityRepo().set(QWEN_COUNT_KEY, { count: n });
 }
 
 async function resetQwenIdentity(reason: string): Promise<void> {
@@ -102,12 +103,12 @@ type RotationState = { count: number };
 const rotationKeyOf = (dir: string): string => `rotation:${dir}`;
 
 async function readRotationState(dir: string): Promise<RotationState> {
-  const st = await identityRepo.get(rotationKeyOf(dir));
+  const st = await identityRepo().get(rotationKeyOf(dir));
   return (st as RotationState | null) ?? { count: 0 };
 }
 
 async function writeRotationState(dir: string, s: RotationState): Promise<void> {
-  await identityRepo.set(rotationKeyOf(dir), s as unknown as Record<string, unknown>);
+  await identityRepo().set(rotationKeyOf(dir), s as unknown as Record<string, unknown>);
 }
 
 // 取身份：计数到额度 → 清空 profile 目录（新身份）并归零
@@ -620,7 +621,13 @@ app.post('/api/login/:platform/test-close', (req, res) => {
 });
 
 // 启动 API 服务（按用户要求：启动时不打印日志）
-export function startServer(): void {
+export async function startServer(): Promise<void> {
   console.log(`[config] ${describeConfig()}`);
+  if (config.storage === 'mysql') {
+    // 连不上就在这里炸掉：绝不静默降级到文件存储（会导致"以为写库了其实写文件"）
+    await pingDb();
+    const recycled = await releaseStaleLeases(config.nodeId);
+    console.log(`[db] 连接正常 (${config.db.host}:${config.db.port}/${config.db.database})${recycled ? `，回收脏占用 ${recycled} 条` : ''}`);
+  }
   app.listen(PORT);
 }

@@ -26,8 +26,11 @@ src/
     index.ts               环境变量集中读取 + paths（dataRoot 下所有有状态目录）
     fingerprint.ts         浏览器指纹：UA 按实际 Chrome 版本动态拼接，登录/采集共用
   storage/
-    accountRepo.ts         账号台账仓储（接口异步；P2 换 MySQL 实现即可）
-    identityRepo.ts        匿名身份/轮换计数键值仓储（P2 换 identity_state 表）
+    accountRepo.ts         账号台账仓储（异步接口；file / mysql 双实现，按配置切换）
+    identityRepo.ts        匿名身份/轮换计数键值仓储
+  db/pool.ts               MySQL 连接池（惰性创建，连不上快速失败）
+sql/schema.sql             建表脚本（人工执行，不自动建表）
+scripts/checkDb.ts         npm run db:check 一键校验库与表字段
 ```
 
 **平台 id 即对外的 modeId**（`qwen` / `wenxiaoyan` / `doubao` / `deepseek` / `hunyuan`），不做别名映射（曾因双命名导致回推错位 bug）。
@@ -119,13 +122,27 @@ GEO_PROXY_USER / _PASS / _HEALTHCHECK / _BIND_TTL_HOURS
 
 ---
 
+## 5.1 关键环境变量
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `GEO_NODE_ID` | `default` | 本节点标识，账号归属；多机时每台必须不同 |
+| `GEO_STORAGE` | `mysql` | `file` 仅本机开发用。**mysql 连不上会快速失败，绝不静默降级** |
+| `DB_HOST/PORT/USER/PASSWORD/NAME` | — | 数据库连接；缺失时启动即报缺少哪些 |
+| `GEO_DATA_ROOT` | `.` | 有状态数据根目录（profile 等） |
+| `GEO_ARTIFACT_MODE` | `none` | `debug` 时落 diagnostics/ 供校准 selector |
+| `GEO_HEADLESS` | `true` | 采集是否无头 |
+| `GEO_MAX_BROWSERS` | `4` | 同时打开浏览器上限 |
+| `GEO_FINGERPRINT_UA` | 自动探测 | 探测不到 Chrome 版本时显式指定 |
+| `GEO_USE_SYSTEM_CHROME` | `false` | 本机开发用系统 Chrome；容器保持 false |
+
 ## 6. 重构阶段
 
 | 阶段 | 内容 | 状态 |
 |---|---|---|
 | P0 | 复制 diagnostics + loginRegistry 修复，让代码能编译 | ✅ 已完成 |
 | P1 | config/storage 层；统一 fingerprint；删 macOS UA | ✅ 已完成 |
-| P2 | MySQL 表 + repo + 迁移 | 待开始 |
+| P2 | MySQL 表 + repo（file/mysql 双实现），启动自检与脏占用回收 | ✅ 已完成 |
 | P3 | /admin 增强（启停/置顶/切换）+ noVNC 内嵌 | 待开始 |
 | P3.5 | 出口 IP 调度（egress 信号量）+ 风控监控 | 待开始 |
 | P4 | ArtifactMode 不落盘 + 截图 WebP 压缩 | 待开始 |

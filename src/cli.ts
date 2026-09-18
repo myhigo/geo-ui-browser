@@ -8,7 +8,10 @@ const args = process.argv.slice(2);
 
 // --server：启动对外 API 服务（端口 8787）
 if (args.includes('--server')) {
-  startServer();
+  startServer().catch((e: unknown) => {
+    console.error(`❌ 启动失败：${(e as Error).message}`);
+    process.exit(1);
+  });
 } else {
   void main();
 }

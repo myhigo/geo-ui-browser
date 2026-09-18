@@ -142,10 +142,12 @@ CREATE TABLE identity_state (
   UNIQUE KEY uk_key (state_key)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- ③ 登录会话（替换内存 activeLogin / testSessions，跨重启可见）
+-- ③ 登录会话（替换内存 activeLogin / testSessions，跨重启可见；P3 启用）
 CREATE TABLE login_session (
-  id          BIGINT AUTO_INCREMENT PRIMARY KEY,
-  account_id  BIGINT NOT NULL,
+  id           BIGINT AUTO_INCREMENT PRIMARY KEY,
+  node_id      VARCHAR(64) NOT NULL DEFAULT 'default',
+  platform_id  VARCHAR(32) NOT NULL,
+  account_code VARCHAR(64) NOT NULL,
   platform_id VARCHAR(32) NOT NULL,
   kind        ENUM('login','test') NOT NULL,
   phase       ENUM('waiting','verifying','done') NOT NULL DEFAULT 'waiting',
@@ -153,8 +155,7 @@ CREATE TABLE login_session (
   started_at  DATETIME NOT NULL,
   expires_at  DATETIME NOT NULL,
   created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE KEY uk_account_kind (account_id, kind),
-  CONSTRAINT fk_ls_account FOREIGN KEY (account_id) REFERENCES platform_account(id) ON DELETE CASCADE
+  UNIQUE KEY uk_node_account_kind (node_id, platform_id, account_code, kind)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 ```
 
@@ -355,6 +356,8 @@ services:
 
 **环境变量**
 ```
+GEO_NODE_ID=default            本节点标识（账号归属；多机时每台不同）
+GEO_STORAGE=mysql              mysql|file（file 仅本机开发用，默认 mysql，连不上即快速失败）
 DB_HOST/DB_PORT/DB_USER/DB_PASSWORD/DB_NAME
 GEO_DATA_ROOT=/data/geo
 GEO_TZ=Asia/Shanghai

@@ -24,7 +24,23 @@ const bool = (k: string, d: boolean): boolean => {
 /** 产物模式：none=不落盘（生产默认）；debug=落 diagnostics/ 供选择器校准 */
 export type ArtifactMode = 'none' | 'debug';
 
+/** 存储后端：file=本地 json（开发用）；mysql=数据库（生产用） */
+export type StorageBackend = 'file' | 'mysql';
+
+export interface DbConfig {
+  host: string;
+  port: number;
+  user: string;
+  password: string;
+  database: string;
+}
+
 export interface AppConfig {
+  /** 本节点标识：账号归属哪台机器（多机时挑号只挑本节点的账号） */
+  nodeId: string;
+  /** 账号台账等结构化状态存哪 */
+  storage: StorageBackend;
+  db: DbConfig;
   /** API 端口 */
   port: number;
   /** 单次采集超时（毫秒） */
@@ -46,6 +62,15 @@ export interface AppConfig {
 }
 
 export const config: AppConfig = {
+  nodeId: env('GEO_NODE_ID') ?? 'default',
+  storage: env('GEO_STORAGE') === 'file' ? 'file' : 'mysql',
+  db: {
+    host: env('DB_HOST') ?? '',
+    port: num('DB_PORT', 3306),
+    user: env('DB_USER') ?? '',
+    password: env('DB_PASSWORD') ?? '',
+    database: env('DB_NAME') ?? '',
+  },
   port: num('PORT', 8787),
   timeoutMs: num('GEO_TIMEOUT_MS', 3 * 60 * 1000),
   pullHost: env('GEO_PULL_HOST') ?? '',
@@ -76,6 +101,8 @@ export const paths = {
 /** 启动日志：只打印非默认的关键项，避免刷屏 */
 export function describeConfig(): string {
   const bits = [
+    `node=${config.nodeId}`,
+    `storage=${config.storage}`,
     `port=${config.port}`,
     `artifactMode=${config.artifactMode}`,
     `headless=${config.headless}`,

@@ -144,7 +144,7 @@ export async function listViews(): Promise<PlatformView[]> {
       label: d.label,
       hint: d.hint,
       // 跨天惰性归零：queryDate 不是今天 → 显示 0（今天还没查过，昨天的次数作废）
-      accounts: (await accountRepo.list(d.platformId)).map((a) => ({
+      accounts: (await accountRepo().list(d.platformId)).map((a) => ({
         ...a,
         todayQueries: a.queryDate === today ? (a.todayQueries ?? 0) : 0,
       })),
@@ -154,27 +154,24 @@ export async function listViews(): Promise<PlatformView[]> {
 }
 
 export async function updateAlias(platformId: string, accountId: string, alias: string): Promise<{ ok: boolean; msg: string }> {
-  if (!await accountRepo.patch(platformId, accountId, { alias })) return { ok: false, msg: '账号不存在' };
+  if (!await accountRepo().patch(platformId, accountId, { alias })) return { ok: false, msg: '账号不存在' };
   return { ok: true, msg: '备注已更新' };
 }
 
 /** 删除整个账号（清目录 + 台账移除） */
 export async function deleteAccount(platformId: string, accountId: string): Promise<{ ok: boolean; msg: string }> {
-  const acc = await accountRepo.get(platformId, accountId);
+  const acc = await accountRepo().get(platformId, accountId);
   if (!acc) return { ok: false, msg: '账号不存在' };
   if (isAccountBusy(accountId) || testSessions.has(testKey(platformId, accountId)))
     return { ok: false, msg: '该账号正在使用中（采集中或测试窗口打开），请先关闭测试窗口后再删' };
   fs.rmSync(acc.dir, { recursive: true, force: true });
-  await accountRepo.save(
-    platformId,
-    (await accountRepo.list(platformId)).filter((a) => a.id !== accountId)
-  );
+  await accountRepo().remove(platformId, accountId);
   return { ok: true, msg: `已删除账号 ${accountId}` };
 }
 
 /** 退出登录（清掉磁盘会话 + 关闭仍打开的登录窗口；台账保留、其他账号不受影响） */
 export async function logoutAccount(platformId: string, accountId: string): Promise<{ ok: boolean; msg: string }> {
-  const acc = await accountRepo.get(platformId, accountId);
+  const acc = await accountRepo().get(platformId, accountId);
   if (!acc) return { ok: false, msg: '账号不存在' };
   if (isAccountBusy(accountId) || testSessions.has(testKey(platformId, accountId)))
     return { ok: false, msg: '该账号正在使用中（采集中或测试窗口打开），请先关闭测试窗口后再退出' };
@@ -187,12 +184,15 @@ export async function logoutAccount(platformId: string, accountId: string): Prom
     activeLogin = null;
   }
   fs.rmSync(acc.dir, { recursive: true, force: true });
-  await accountRepo.patch(platformId, accountId, { status: 'none', note: '已退出登录', marker: undefined, lastUsedAt: undefined });
+  await accountRepo().patch(platformId, accountId, { status: 'none', note: '已退出登录', marker: undefined, lastUsedAt: undefined });
   return { ok: true, msg: `已退出 ${accountId}，登录态已清除` };
 }
 
 // ---------- 问答侧：挑号与回写 ----------
 const inFlight = new Set<string>(); // 正在使用的账号（防同号并发）
+
+/** 本实例标识，写入 leased_by；重启清理脏占用时用 */
+export const instanceId = `${config.nodeId}:${process.pid}`;
 
 function isAccountBusy(accountId: string): boolean {
   return inFlight.has(accountId);
@@ -207,7 +207,7 @@ export interface ReadyCheck {
 
 /** 分配一个可用的已登录账号（只挑 active 且空闲；无可用 → 返回原因） */
 export async function allocateAccount(platformId: string): Promise<ReadyCheck> {
-  const accounts = await accountRepo.list(platformId);
+  const accounts = await accountRepo().list(platformId);
   const usable = accounts.filter((a) => a.status === 'active' && !isAccountBusy(a.id));
   if (usable.length === 0) {
     const any = accounts.some((a) => ['failed', 'cooling', 'none'].includes(a.status));
@@ -234,12 +234,15 @@ export async function allocateAccount(platformId: string): Promise<ReadyCheck> {
     .sort((x, y) => y.score - x.score);
   const pick = scored[0].a;
   inFlight.add(pick.id);
+  // 占用落库（跨重启/多机可见）；失败不阻断，内存 inFlight 已保证本进程内互斥
+  await accountRepo().patch(platformId, pick.id, { leasedBy: instanceId }).catch(() => {});
   return { ok: true, accountId: pick.id, dir: pick.dir };
 }
 
 export async function releaseAccount(platformId: string, accountId: string, success: boolean, loginRequired: boolean): Promise<void> {
   inFlight.delete(accountId);
-  const acc = await accountRepo.get(platformId, accountId);
+  await accountRepo().patch(platformId, accountId, { leasedBy: null }).catch(() => {});
+  const acc = await accountRepo().get(platformId, accountId);
   if (!acc) return;
   const patch: Partial<Account> = { lastUsedAt: Date.now() };
   if (loginRequired) {
@@ -254,7 +257,7 @@ export async function releaseAccount(platformId: string, accountId: string, succ
     patch.todayQueries = base + 1;
     patch.queryDate = today;
   }
-  await accountRepo.patch(platformId, accountId, patch);
+  await accountRepo().patch(platformId, accountId, patch);
 }
 
 // ---------- 登录会话（同一时刻只允许一个平台的一个账号在登） ----------
@@ -448,7 +451,7 @@ export async function startLogin(
   if (activeLogin) {
     return { ok: false, msg: `已有登录会话进行中（${activeLogin.platformId}/${activeLogin.accountId}），请先完成或等待超时` };
   }
-  let accounts = await accountRepo.list(platformId);
+  let accounts = await accountRepo().list(platformId);
   let acc: Account;
   if (accountId) {
     acc = accounts.find((a) => a.id === accountId)!;
@@ -463,10 +466,9 @@ export async function startLogin(
       alias: `账号${seq}`,
       status: 'none',
     };
-    accounts.push(acc);
-    await accountRepo.save(platformId, accounts);
+    await accountRepo().add(platformId, acc);
   }
-  await accountRepo.patch(platformId, acc.id, { status: 'waiting', note: `登录窗口已打开，等待人工操作（${acc.id}）` });
+  await accountRepo().patch(platformId, acc.id, { status: 'waiting', note: `登录窗口已打开，等待人工操作（${acc.id}）` });
   const waitMs = driver.loginWaitMs ?? 6 * 60 * 1000;
 
   const task = (async () => {
@@ -474,7 +476,7 @@ export async function startLogin(
     try {
       context = await chromium.launchPersistentContext(acc.dir, launchOpts());
     } catch (e) {
-      await accountRepo.patch(platformId, acc.id, { status: 'failed', note: `打开登录窗口失败：${(e as Error).message}` });
+      await accountRepo().patch(platformId, acc.id, { status: 'failed', note: `打开登录窗口失败：${(e as Error).message}` });
       return;
     }
     let confirmResolve: (v: boolean) => void = () => {};
@@ -491,13 +493,13 @@ export async function startLogin(
       ]);
       done = waited;
     } catch (e) {
-      await accountRepo.patch(platformId, acc.id, { status: 'failed', note: `登录窗口异常：${(e as Error).message}` });
+      await accountRepo().patch(platformId, acc.id, { status: 'failed', note: `登录窗口异常：${(e as Error).message}` });
     } finally {
       activeLogin = null;
       await context.close().catch(() => {});
     }
     // 登录进行中账号被主动退出（logoutAccount 已把状态置 none、删目录）——不再回写登录结果，避免覆盖成 failed
-    if ((await accountRepo.get(platformId, acc.id))?.status === 'none') {
+    if ((await accountRepo().get(platformId, acc.id))?.status === 'none') {
       return;
     }
     if (done) {
@@ -512,7 +514,7 @@ export async function startLogin(
         const marker = (domMarker ?? v.marker ?? '').trim();
         // 昵称串号护栏：本次昵称与历史不一致（且历史有值）→ 明确警示
         const changed = !!(acc.marker && marker && acc.marker !== marker);
-        await accountRepo.patch(platformId, acc.id, {
+        await accountRepo().patch(platformId, acc.id, {
           status: 'active',
           note: changed
             ? `昵称变化：${acc.marker} → ${marker}（确认是否登成了别的号）`
@@ -527,13 +529,13 @@ export async function startLogin(
         });
       } else {
         // 磁盘还原失败 → 登录态未真正持久化，明确标 failed，绝不凭窗口 DOM 昵称标 active
-        await accountRepo.patch(platformId, acc.id, {
+        await accountRepo().patch(platformId, acc.id, {
           status: 'failed',
           note: `登录态未持久化到磁盘（窗口内已登录但无头重开仍是登录墙）：${v.note ?? ''}`,
         });
       }
     } else {
-      await accountRepo.patch(platformId, acc.id, { status: 'failed', note: '登录等待超时，未完成登录' });
+      await accountRepo().patch(platformId, acc.id, { status: 'failed', note: '登录等待超时，未完成登录' });
     }
   })();
   void task;
@@ -655,7 +657,7 @@ export async function testAccount(
 ): Promise<{ ok: boolean; msg: string }> {
   const driver = LOGIN_DRIVERS[platformId];
   if (!driver) return { ok: false, msg: `未注册的登录平台：${platformId}` };
-  const acc = await accountRepo.get(platformId, accountId);
+  const acc = await accountRepo().get(platformId, accountId);
   if (!acc) return { ok: false, msg: `账号不存在：${accountId}` };
   // 只有处于登录态的账号才能测试（none=未登录 / waiting=登录中 / failed=不可用 一律禁止）
   if (acc.status !== 'active' && acc.status !== 'cooling') {
