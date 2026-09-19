@@ -26,7 +26,8 @@ services:
       GEO_MAX_PER_EGRESS: ${GEO_MAX_PER_EGRESS:-1}
       GEO_TIMEOUT_MS: ${GEO_TIMEOUT_MS:-180000}
     volumes:
-      - ./data:/data/geo          # 唯一有状态的部分：浏览器 profile
+      # 唯一有状态的部分：浏览器 profile。宿主机侧路径由 .env 的 GEO_DATA_DIR 注入（必填，无默认值）
+      - ${GEO_DATA_DIR}:/data/geo
     shm_size: "1gb"               # 默认 64MB 会让 Chrome 崩
     stop_grace_period: 30s        # 留给优雅退出关浏览器
 
