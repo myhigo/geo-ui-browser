@@ -1,7 +1,38 @@
 // 集中配置：所有环境变量在此读取与校验，业务代码不再散落 process.env。
 // 约定：带默认值的都不必配；无默认且缺失的，在启动日志里明确告警。
 
+import fs from 'fs';
 import path from 'path';
+
+// 本地开发用：加载项目根目录的 .env（零依赖，避免引入 dotenv）。
+// 生产/Docker 直接注入真实环境变量，这里只补充「缺失项」，绝不覆盖已存在的 env；
+// 找不到 .env（如容器里）就静默跳过。必须在下方的 config 读取 process.env 之前执行。
+function loadDotEnv(): void {
+  const envPath = path.resolve(process.cwd(), '.env');
+  let raw: string;
+  try {
+    raw = fs.readFileSync(envPath, 'utf-8');
+  } catch {
+    return;
+  }
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eq = trimmed.indexOf('=');
+    if (eq < 0) continue;
+    const key = trimmed.slice(0, eq).trim();
+    if (!key) continue;
+    let val = trimmed.slice(eq + 1).trim();
+    if (
+      (val.startsWith('"') && val.endsWith('"')) ||
+      (val.startsWith("'") && val.endsWith("'"))
+    ) {
+      val = val.slice(1, -1);
+    }
+    if (process.env[key] === undefined) process.env[key] = val;
+  }
+}
+loadDotEnv();
 
 const env = (k: string): string | undefined => {
   const v = process.env[k];
