@@ -221,7 +221,7 @@ const toColumnValue = (key: string, v: unknown): unknown => {
 export class MysqlAccountRepo implements AccountRepo {
   async list(platformId: string): Promise<Account[]> {
     const [rows] = await dbPool().query<Row[]>(
-      `SELECT ${SELECT_COLS} FROM platform_account
+      `SELECT ${SELECT_COLS} FROM geo_ui_platform_account
         WHERE node_id = ? AND platform_id = ?
         ORDER BY account_code`,
       [config.nodeId, platformId]
@@ -231,7 +231,7 @@ export class MysqlAccountRepo implements AccountRepo {
 
   async get(platformId: string, accountId: string): Promise<Account | undefined> {
     const [rows] = await dbPool().query<Row[]>(
-      `SELECT ${SELECT_COLS} FROM platform_account
+      `SELECT ${SELECT_COLS} FROM geo_ui_platform_account
         WHERE node_id = ? AND platform_id = ? AND account_code = ?`,
       [config.nodeId, platformId, accountId]
     );
@@ -253,7 +253,7 @@ export class MysqlAccountRepo implements AccountRepo {
     }
     if (!sets.length) return this.get(platformId, accountId);
     const [res] = await dbPool().query<ResultSetHeader>(
-      `UPDATE platform_account SET ${sets.join(', ')}
+      `UPDATE geo_ui_platform_account SET ${sets.join(', ')}
         WHERE node_id = ? AND platform_id = ? AND account_code = ?`,
       [...vals, config.nodeId, platformId, accountId]
     );
@@ -262,7 +262,7 @@ export class MysqlAccountRepo implements AccountRepo {
 
   async add(platformId: string, account: Account): Promise<void> {
     await dbPool().query(
-      `INSERT INTO platform_account
+      `INSERT INTO geo_ui_platform_account
          (node_id, platform_id, account_code, alias, marker, status, note, profile_dir,
           today_queries, query_date, consecutive_fails, last_used_at, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FROM_UNIXTIME(? / 1000), NOW())`,
@@ -285,7 +285,7 @@ export class MysqlAccountRepo implements AccountRepo {
 
   async remove(platformId: string, accountId: string): Promise<void> {
     await dbPool().query(
-      `DELETE FROM platform_account WHERE node_id = ? AND platform_id = ? AND account_code = ?`,
+      `DELETE FROM geo_ui_platform_account WHERE node_id = ? AND platform_id = ? AND account_code = ?`,
       [config.nodeId, platformId, accountId]
     );
   }

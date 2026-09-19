@@ -108,14 +108,14 @@ v1 之所以把它列为"最大风险"，是因为 **Mac 登录 ≠ Linux 采集
 
 ```sql
 -- ① 平台账号（核心）
-CREATE TABLE platform_account (
+CREATE TABLE geo_ui_platform_account (
   id                BIGINT AUTO_INCREMENT PRIMARY KEY,
   platform_id       VARCHAR(32)  NOT NULL COMMENT 'doubao/qwen/wenxiaoyan/deepseek/hunyuan',
   account_code      VARCHAR(64)  NOT NULL COMMENT 'doubao-1',
   node_id           VARCHAR(64)  NOT NULL DEFAULT 'default' COMMENT '持有该账号 profile 的节点；挑号只挑本节点的账号',
   alias             VARCHAR(64)  COMMENT '备注',
   marker            VARCHAR(128) COMMENT '平台侧昵称（登录后抓取）',
-  status            ENUM('none','waiting','active','cooling','failed') NOT NULL DEFAULT 'none',
+  status            VARCHAR(16)   NOT NULL DEFAULT 'none' COMMENT 'none/waiting/active/cooling/failed',
   enabled           TINYINT(1) NOT NULL DEFAULT 1 COMMENT '0=停用（不参与挑号）',
   priority          INT NOT NULL DEFAULT 0 COMMENT '越大越优先，手动置顶用',
   note              VARCHAR(512),
@@ -134,7 +134,7 @@ CREATE TABLE platform_account (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ② 匿名身份/轮换计数（替换 qwen.json 与轮换 json）
-CREATE TABLE identity_state (
+CREATE TABLE geo_ui_identity_state (
   id         BIGINT AUTO_INCREMENT PRIMARY KEY,
   state_key  VARCHAR(128) NOT NULL,
   payload    JSON NOT NULL,
@@ -143,14 +143,14 @@ CREATE TABLE identity_state (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ③ 登录会话（替换内存 activeLogin / testSessions，跨重启可见；P3 启用）
-CREATE TABLE login_session (
+CREATE TABLE geo_ui_login_session (
   id           BIGINT AUTO_INCREMENT PRIMARY KEY,
   node_id      VARCHAR(64) NOT NULL DEFAULT 'default',
   platform_id  VARCHAR(32) NOT NULL,
   account_code VARCHAR(64) NOT NULL,
   platform_id VARCHAR(32) NOT NULL,
-  kind        ENUM('login','test') NOT NULL,
-  phase       ENUM('waiting','verifying','done') NOT NULL DEFAULT 'waiting',
+  kind        VARCHAR(16)   NOT NULL COMMENT 'login/test',
+  phase       VARCHAR(16)   NOT NULL DEFAULT 'waiting' COMMENT 'waiting/verifying/done',
   instance_id VARCHAR(64) NOT NULL,
   started_at  DATETIME NOT NULL,
   expires_at  DATETIME NOT NULL,
@@ -163,14 +163,14 @@ CREATE TABLE login_session (
 
 ```sql
 -- 借：条件更新 + affectedRows 判成败
-UPDATE platform_account SET leased_by=?, leased_at=NOW()
+UPDATE geo_ui_platform_account SET leased_by=?, leased_at=NOW()
  WHERE node_id=? AND platform_id=? AND status='active' AND enabled=1 AND leased_by IS NULL
  ORDER BY priority DESC, last_used_at IS NULL DESC, last_used_at ASC,
           today_queries ASC, consecutive_fails ASC
  LIMIT 1;
 
 -- 还：带 lease 校验
-UPDATE platform_account SET leased_by=NULL, leased_at=NULL, last_used_at=NOW(), ...
+UPDATE geo_ui_platform_account SET leased_by=NULL, leased_at=NULL, last_used_at=NOW(), ...
  WHERE id=? AND leased_by=?;
 ```
 
@@ -461,7 +461,7 @@ Buffer(PNG) → sharp.webp({quality:80}) → size > 300KB ? quality-8 重试 : �
 1. **登录与采集必须同 IP**。代理要**粘性**（sticky）—— 登录时用哪个出口，采集就必须用同一个。否则平台判"异地登录"，直接掉线或二次验证。所以代理配置存在**账号维度**，登录窗口和采集任务都读它。
 2. **数据中心 IP 权重低于住宅 IP**。机房/云服务器 IP 段本身就被很多平台打标，同样账号数下更容易被风控。预算允许优先住宅代理。
 
-**数据模型补充**（加到 §5 的 `platform_account`）
+**数据模型补充**（加到 §5 的 `geo_ui_platform_account`）
 
 ```sql
 proxy_url   VARCHAR(512) NULL COMMENT 'http://user:pass@host:port；空=走服务器默认出口',

@@ -1,7 +1,7 @@
-// 匿名身份/轮换计数的键值仓储（对应 identity_state 表）。
+// 匿名身份/轮换计数的键值仓储（对应 geo_ui_identity_state 表）。
 //
 // file 实现：.profiles/_identity.json
-// mysql 实现：identity_state(state_key, payload JSON)
+// mysql 实现：geo_ui_identity_state(state_key, payload JSON)
 
 import fs from 'fs';
 import path from 'path';
@@ -53,7 +53,7 @@ export class FileIdentityRepo implements IdentityRepo {
 export class MysqlIdentityRepo implements IdentityRepo {
   async get(key: string): Promise<Record<string, unknown> | null> {
     const [rows] = await dbPool().query<PayloadRow[]>(
-      `SELECT payload FROM identity_state WHERE node_id = ? AND state_key = ?`,
+      `SELECT payload FROM geo_ui_identity_state WHERE node_id = ? AND state_key = ?`,
       [config.nodeId, key]
     );
     if (!rows.length) return null;
@@ -63,7 +63,7 @@ export class MysqlIdentityRepo implements IdentityRepo {
 
   async set(key: string, value: Record<string, unknown>): Promise<void> {
     await dbPool().query(
-      `INSERT INTO identity_state (node_id, state_key, payload) VALUES (?, ?, ?)
+      `INSERT INTO geo_ui_identity_state (node_id, state_key, payload) VALUES (?, ?, ?)
        ON DUPLICATE KEY UPDATE payload = VALUES(payload)`,
       [config.nodeId, key, JSON.stringify(value)]
     );

@@ -50,7 +50,7 @@ export async function pingDb(): Promise<void> {
 /** 启动时回收本节点的脏占用（上次进程非正常退出留下的 lease） */
 export async function releaseStaleLeases(nodeId: string): Promise<number> {
   const [res] = await dbPool().query<ResultSetHeader>(
-    `UPDATE platform_account SET leased_by = NULL, leased_at = NULL
+    `UPDATE geo_ui_platform_account SET leased_by = NULL, leased_at = NULL
       WHERE node_id = ? AND leased_by IS NOT NULL`,
     [nodeId]
   );

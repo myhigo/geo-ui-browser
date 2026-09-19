@@ -15,13 +15,13 @@ interface TblRow extends RowDataPacket {
 }
 
 const REQUIRED: Record<string, string[]> = {
-  platform_account: [
+  geo_ui_platform_account: [
     'node_id', 'platform_id', 'account_code', 'alias', 'marker', 'status', 'enabled',
     'priority', 'note', 'profile_dir', 'today_queries', 'query_date', 'consecutive_fails',
     'last_used_at', 'leased_by', 'leased_at', 'proxy_host', 'proxy_port', 'created_at', 'updated_at',
   ],
-  identity_state: ['node_id', 'state_key', 'payload', 'updated_at'],
-  login_session: ['node_id', 'platform_id', 'account_code', 'kind', 'phase', 'started_at', 'expires_at'],
+  geo_ui_identity_state: ['node_id', 'state_key', 'payload', 'updated_at'],
+  geo_ui_login_session: ['node_id', 'platform_id', 'account_code', 'kind', 'phase', 'started_at', 'expires_at'],
 };
 
 async function main(): Promise<void> {
@@ -66,7 +66,7 @@ async function main(): Promise<void> {
   }
 
   const [cnt] = await dbPool().query<RowDataPacket[]>(
-    `SELECT COUNT(*) AS n FROM platform_account WHERE node_id = ?`,
+    `SELECT COUNT(*) AS n FROM geo_ui_platform_account WHERE node_id = ?`,
     [config.nodeId]
   );
   console.log(`ℹ️  当前节点 ${config.nodeId} 下已有账号 ${(cnt[0] as { n: number }).n} 条`);
