@@ -94,6 +94,12 @@ export interface AppConfig {
   useSystemChrome: boolean;
   /** noVNC 页面地址，/admin 内嵌用（建议走反向代理保持同源）；留空则不显示登录窗口面板 */
   novncUrl: string;
+  /**
+   * 测试结果落盘目录（留空 = 不落盘）。
+   * 仅用于人工验证：每次采集把截图 / 回答 / 信源写到该目录下，便于在宿主机挂载卷里直接查看。
+   * 与 artifactMode 无关（none 模式下 diagnostics 产物依然不落盘，这里只额外写这一份验证结果）。
+   */
+  testOutDir: string;
   shot: {
     /** 输出格式：webp 体积远小于 png，文字边缘优于 jpeg */
     format: 'webp' | 'jpeg' | 'png';
@@ -127,6 +133,7 @@ export const config: AppConfig = {
   chromePath: env('GEO_CHROME_PATH'),
   useSystemChrome: bool('GEO_USE_SYSTEM_CHROME', false),
   novncUrl: env('GEO_NOVNC_URL') ?? '',
+  testOutDir: env('GEO_TEST_OUT_DIR') ?? '',
   shot: {
     format: (env('GEO_SHOT_FORMAT') === 'jpeg' ? 'jpeg' : env('GEO_SHOT_FORMAT') === 'png' ? 'png' : 'webp') as
       | 'webp'

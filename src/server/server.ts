@@ -37,7 +37,7 @@ import { config, paths, describeConfig } from '../config/index.js';
 import { accountRepo } from '../storage/accountRepo.js';
 import { pingDb, releaseStaleLeases } from '../db/pool.js';
 import { identityRepo } from '../storage/identityRepo.js';
-import { compressToBase64 } from '../storage/shotCompressor.js';
+import { compressScreenshot } from '../storage/shotCompressor.js';
 import { installShutdownHandlers, isShuttingDown } from '../runtime/shutdown.js';
 
 const PORT = config.port;
@@ -141,6 +141,52 @@ async function releaseIdentity(platform: string, loginRequired: boolean): Promis
   await writeRotationState(cfg.dir, { count: st.count + 1 });
 }
 
+// 测试结果落盘（仅供人工验证）。写到 GEO_TEST_OUT_DIR 下：
+//   <dir>/<时间>_<平台>_<账号>_<关键词>/{screenshot.webp, answer.txt, sources.json, meta.json}
+// 与 artifactMode 无关：none 模式下 diagnostics 产物依然不落盘，这里只额外写这一份验证结果。
+function saveRunResult(opts: {
+  dir: string;
+  platform: string;
+  keyword: string;
+  accountId?: string;
+  shot: { mime: string; buffer: Buffer };
+  answer: string;
+  sources: { title: string; url: string; siteName: string }[];
+}): string | undefined {
+  try {
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const safeKw = (opts.keyword || 'kw').replace(/[^\w一-龥-]+/g, '_').slice(0, 30);
+    const outDir = path.join(opts.dir, `${stamp}_${opts.platform}_${opts.accountId || 'auto'}_${safeKw}`);
+    fs.mkdirSync(outDir, { recursive: true });
+    const ext = opts.shot.mime === 'image/jpeg' ? 'jpg' : opts.shot.mime === 'image/png' ? 'png' : 'webp';
+    fs.writeFileSync(path.join(outDir, `screenshot.${ext}`), opts.shot.buffer);
+    fs.writeFileSync(path.join(outDir, 'answer.txt'), opts.answer || '', 'utf8');
+    fs.writeFileSync(path.join(outDir, 'sources.json'), JSON.stringify(opts.sources || [], null, 2), 'utf8');
+    fs.writeFileSync(
+      path.join(outDir, 'meta.json'),
+      JSON.stringify(
+        {
+          platform: opts.platform,
+          keyword: opts.keyword,
+          accountId: opts.accountId ?? null,
+          finishedAt: new Date().toISOString(),
+          screenshotMime: opts.shot.mime,
+          screenshotBytes: opts.shot.buffer.length,
+          answerChars: (opts.answer || '').length,
+          sourceCount: (opts.sources || []).length,
+        },
+        null,
+        2
+      ),
+      'utf8'
+    );
+    return outDir;
+  } catch (e) {
+    console.log(`[saveRunResult] 测试结果落盘失败：${(e as Error).message}`);
+    return undefined;
+  }
+}
+
 // 组装响应：截图 base64 + 回答 + 信源
 export async function execute(
   platform: string,
@@ -222,31 +268,45 @@ export async function execute(
   if (!result.answerText) {
     throw new ApiError(500, summarize(result.notes));
   }
-  // 2026-09-03 17:47 用户定：截图失败/未产出 → 不整页兜底，screenshot 留空（不因缺截图判失败）
-  // ⚠️ artifactMode=none（生产默认）时，截图临时文件读完 Buffer 就被删了、sampleDir 也是空字符串，
-  //    所以不能从文件读 —— 必须优先用 run.ts 返回的内存 Buffer（qaScreenshotBuffer），
-  //    并统一走 compressToBase64 做 WebP 压缩（回推对方服务要的就是压缩后的 base64）。
-  let screenshot = '';
-  try {
-    const shotBuf = result.qaScreenshotBuffer;
-    if (shotBuf && shotBuf.length > 0) {
-      screenshot = await compressToBase64(shotBuf);
-    } else {
-      const shotRel = result.artifacts.qaScreenshot;
-      const shotPath = shotRel && result.sampleDir ? path.join(result.sampleDir, shotRel) : '';
-      if (shotPath && fs.existsSync(shotPath)) {
-        screenshot = await compressToBase64(fs.readFileSync(shotPath));
-      }
-    }
-  } catch (e) {
-    console.log(`[${platform}] 截图压缩失败，screenshot 留空：${(e as Error).message}`);
-  }
   const toSource = (s: SourceInfo) => ({
     title: s.title ?? '',
     url: s.url ?? '',
     siteName: s.platform ?? siteFromUrl(s.url),
   });
-  return { screenshot, answer: result.answerText, sources: (result.sources ?? []).map(toSource) };
+  const sources = (result.sources ?? []).map(toSource);
+
+  // 2026-09-03 17:47 用户定：截图失败/未产出 → 不整页兜底，screenshot 留空（不因缺截图判失败）
+  // ⚠️ artifactMode=none（生产默认）时，截图临时文件读完 Buffer 就被删了、sampleDir 也是空字符串，
+  //    所以不能从文件读 —— 必须优先用 run.ts 返回的内存 Buffer（qaScreenshotBuffer）；
+  //    再统一压缩（回推对方服务要的就是压缩后的 base64）。
+  let screenshot = '';
+  try {
+    let shotBuf: Buffer | undefined = result.qaScreenshotBuffer;
+    if ((!shotBuf || shotBuf.length === 0) && result.artifacts.qaScreenshot && result.sampleDir) {
+      const p = path.join(result.sampleDir, result.artifacts.qaScreenshot);
+      if (fs.existsSync(p)) shotBuf = fs.readFileSync(p);
+    }
+    if (shotBuf && shotBuf.length > 0) {
+      const cr = await compressScreenshot(shotBuf);
+      screenshot = `data:${cr.mime};base64,${cr.buffer.toString('base64')}`;
+      // 验证用落盘（GEO_TEST_OUT_DIR 留空则不写），方便在宿主机挂载卷里直接看截图/回答/信源
+      if (config.testOutDir) {
+        const dir = saveRunResult({
+          dir: config.testOutDir,
+          platform,
+          keyword,
+          accountId,
+          shot: { mime: cr.mime, buffer: cr.buffer },
+          answer: result.answerText ?? '',
+          sources,
+        });
+        if (dir) console.log(`[${platform}] 测试结果已落盘：${dir}`);
+      }
+    }
+  } catch (e) {
+    console.log(`[${platform}] 截图压缩失败，screenshot 留空：${(e as Error).message}`);
+  }
+  return { screenshot, answer: result.answerText, sources };
 }
 
 // 同平台串行、跨平台并行

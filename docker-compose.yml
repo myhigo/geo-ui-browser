@@ -20,6 +20,8 @@ services:
       GEO_DATA_ROOT: /data/geo
       GEO_PULL_HOST: ${GEO_PULL_HOST:-}
       GEO_NOVNC_URL: ${GEO_NOVNC_URL:-/novnc/vnc.html?autoconnect=1&resize=scale}
+      # 测试结果落盘目录（容器内路径，留空=不落盘）；挂到宿主机 geo-ui-data 下便于人工验证
+      GEO_TEST_OUT_DIR: ${GEO_TEST_OUT_DIR:-}
       GEO_ARTIFACT_MODE: ${GEO_ARTIFACT_MODE:-none}
       GEO_HEADLESS: ${GEO_HEADLESS:-true}
       GEO_MAX_BROWSERS: ${GEO_MAX_BROWSERS:-4}
