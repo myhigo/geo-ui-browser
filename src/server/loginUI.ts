@@ -64,6 +64,8 @@ export function adminPageHtml(): string {
 <div id="toast" class="toast"></div>
 <script>
 var CUR = null, POLL = null, SA_LAST = '', TESTPOLL = null;
+// 已构建面板的结构标识："<平台>|<有无登录窗口>"。用于避免轮询时整块重建
+var PANEL_KEY = null;
 var NOVNC_URL = ${JSON.stringify(config.novncUrl)};
 var ST = { none:{t:'未登录',c:'#c9cdd4'}, waiting:{t:'登录中',c:'#ff7d00'}, active:{t:'已登录',c:'#00b42a'}, cooling:{t:'冷却中',c:'#ff7d00'}, failed:{t:'不可用',c:'#f53f3f'} };
 function $(s){ return document.querySelector(s); }
@@ -84,55 +86,75 @@ function render(){
     var p = (d.platforms||[]).filter(function(x){ return x.platformId===CUR; })[0];
     if(!p) return;
     menu(d.platforms||[]);
-    var html = '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;"><h2>'+p.label+' · 账号管理</h2><button class="primary" data-kind="start">＋ 添加账号登录</button></div>';
-    if(p.hint) html += '<div class="hint">'+esc(p.hint)+'</div>';
-    if(NOVNC_URL && p.accounts.some(function(a){ return a.status==='waiting'; })){
-      html += '<div class="acc" style="margin-bottom:14px;">'
-        + '<div class="meta" style="margin-bottom:8px;">登录窗口：请在下方窗口内完成扫码 / 输入验证码，完成后点账号卡上的「我已登录完成，验证」。</div>'
-        + '<iframe id="novnc" src="'+esc(NOVNC_URL)+'" style="width:100%;height:520px;border:1px solid #e5e6eb;border-radius:8px;background:#000;"></iframe>'
-        + '<div style="display:flex;gap:8px;margin-top:10px;align-items:center;">'
-        + '<input id="vnc-text" class="inp" style="flex:1;" placeholder="手机号 / 验证码：填入后点「发送到窗口」">'
-        + '<button id="vnc-send">发送到窗口</button></div>'
-        + '<div class="meta">若浏览器未提供剪贴板接口，会自动改为复制到剪贴板，你在窗口内 Ctrl+V 粘贴即可。</div>'
-        + '</div>';
-    }
-    if(!p.accounts.length){ html += '<div class="empty">还没有账号，点右上角「添加账号登录」开第一个号。</div>'; }
-    else {
-      html += '<div class="acc-grid">';
+    // 是否需要登录窗口（有 waiting 账号时）
+    var needVnc = !!(NOVNC_URL && p.accounts.some(function(a){ return a.status==='waiting'; }));
+
+    // —— 账号卡片（每次刷新）——
+    var accHtml;
+    if(!p.accounts.length){
+      accHtml = '<div class="empty">还没有账号，点右上角「添加账号登录」开第一个号。</div>';
+    } else {
+      accHtml = '<div class="acc-grid">';
       p.accounts.forEach(function(a){
       var st = ST[a.status] || {t:a.status,c:'#c9cdd4'};
       var off = a.enabled===false;
-      html += '<div class="acc"'+(off?' style="opacity:.55"':'')+'><div class="acc-top"><span class="dot" style="background:'+st.c+'"></span><span class="st-label">'+st.t+(a.busy?'（使用中）':'')+'</span>'+(a.alias?'<span class="acc-alias">'+esc(a.alias)+'</span>':'')+(off?'<span class="meta">已停用</span>':'')+((a.priority||0)>0?'<span class="meta">置顶</span>':'')+'</div>';
-      html += '<div class="meta">昵称：<b>'+esc(a.marker||'--')+'</b> ｜ 今日查询次数：<b>'+((a.todayQueries==null?0:a.todayQueries))+'</b></div>';
-      if(a.note) html += '<div class="note">'+esc(a.note)+'</div>';
-      html += '<div class="meta">'+(a.lastUsedAt?'最近使用：<b>'+new Date(a.lastUsedAt).toLocaleString()+'</b>':'最近使用：<b>-</b>')+(a.consecutiveFails?' ｜ 连续失败：<b>'+a.consecutiveFails+'</b>':'')+'</div>';
-      html += '<div class="btns">';
+      accHtml += '<div class="acc"'+(off?' style="opacity:.55"':'')+'><div class="acc-top"><span class="dot" style="background:'+st.c+'"></span><span class="st-label">'+st.t+(a.busy?'（使用中）':'')+'</span>'+(a.alias?'<span class="acc-alias">'+esc(a.alias)+'</span>':'')+(off?'<span class="meta">已停用</span>':'')+((a.priority||0)>0?'<span class="meta">置顶</span>':'')+'</div>';
+      accHtml += '<div class="meta">昵称：<b>'+esc(a.marker||'--')+'</b> ｜ 今日查询次数：<b>'+((a.todayQueries==null?0:a.todayQueries))+'</b></div>';
+      if(a.note) accHtml += '<div class="note">'+esc(a.note)+'</div>';
+      accHtml += '<div class="meta">'+(a.lastUsedAt?'最近使用：<b>'+new Date(a.lastUsedAt).toLocaleString()+'</b>':'最近使用：<b>-</b>')+(a.consecutiveFails?' ｜ 连续失败：<b>'+a.consecutiveFails+'</b>':'')+'</div>';
+      accHtml += '<div class="btns">';
       if(a.status==='waiting') {
-        html += '<button class="primary" data-kind="verify" data-acc="'+a.id+'">我已登录完成，验证</button>';
+        accHtml += '<button class="primary" data-kind="verify" data-acc="'+a.id+'">我已登录完成，验证</button>';
       } else if(a.status==='active' || a.status==='cooling') {
         // 已登录态：登录按钮置灰、不可点击（避免重复登录）
-        html += '<button class="primary" data-kind="start" data-acc="'+a.id+'" disabled title="已登录，无需重复登录">登录</button>';
+        accHtml += '<button class="primary" data-kind="start" data-acc="'+a.id+'" disabled title="已登录，无需重复登录">登录</button>';
       } else {
-        html += '<button class="primary" data-kind="start" data-acc="'+a.id+'">登录</button>';
+        accHtml += '<button class="primary" data-kind="start" data-acc="'+a.id+'">登录</button>';
       }
-      if(a.status!=='none' && a.status!=='waiting') html += '<button data-kind="logout" data-acc="'+a.id+'">退出</button>';
+      if(a.status!=='none' && a.status!=='waiting') accHtml += '<button data-kind="logout" data-acc="'+a.id+'">退出</button>';
       if(a.status!=='waiting') {
-        html += '<button data-kind="alias" data-acc="'+a.id+'">改备注</button>';
-        html += '<button data-kind="toggle" data-acc="'+a.id+'">'+(off?'启用':'停用')+'</button>';
-        html += '<button data-kind="priority" data-acc="'+a.id+'">'+((a.priority||0)>0?'取消置顶':'置顶')+'</button>';
+        accHtml += '<button data-kind="alias" data-acc="'+a.id+'">改备注</button>';
+        accHtml += '<button data-kind="toggle" data-acc="'+a.id+'">'+(off?'启用':'停用')+'</button>';
+        accHtml += '<button data-kind="priority" data-acc="'+a.id+'">'+((a.priority||0)>0?'取消置顶':'置顶')+'</button>';
       }
       // 仅「已登录」状态的账号显示测试按钮（active=已登录 / cooling=冷却中；none/waiting/failed 不显示）
       if(a.status==='active' || a.status==='cooling') {
-        html += '<button data-testbtn="'+p.platformId+'/'+a.id+'">测试</button>';
+        accHtml += '<button data-testbtn="'+p.platformId+'/'+a.id+'">测试</button>';
       }
-      html += '<button class="danger" data-kind="delete" data-acc="'+a.id+'">删除账号</button>';
-      html += '</div></div>';
+      accHtml += '<button class="danger" data-kind="delete" data-acc="'+a.id+'">删除账号</button>';
+      accHtml += '</div></div>';
       });
-      html += '</div>';
+      accHtml += '</div>';
     }
-    $('#panel').innerHTML = html;
+    // —— 外壳（含 noVNC iframe 和文本输入框）——
+    // 这两个元素是「有状态」的：若每 3 秒的轮询都整块重建，会同时造成
+    //   1) noVNC 反复断连重连 → 窗口一直是黑屏
+    //   2) 输入框被重建 → 刚填的手机号/验证码被清空、焦点丢失（表现为"输入不进去"）
+    // 因此只在结构变化（切平台 / 登录窗口出现或消失 / 面板被其他视图占用过）时重建外壳，
+    // 轮询时只刷新 #acc-area 里的账号卡片。
+    var key = CUR + '|' + (needVnc ? 'vnc' : 'novnc');
+    if(PANEL_KEY !== key || !document.getElementById('acc-area')){
+      var shell = '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;"><h2>'+p.label+' · 账号管理</h2><button class="primary" data-kind="start">＋ 添加账号登录</button></div>';
+      if(p.hint) shell += '<div class="hint">'+esc(p.hint)+'</div>';
+      if(needVnc){
+        shell += '<div class="acc" style="margin-bottom:14px;">'
+          + '<div class="meta" style="margin-bottom:8px;">登录窗口：请在下方窗口内完成扫码 / 输入验证码，完成后点账号卡上的「我已登录完成，验证」。</div>'
+          + '<iframe id="novnc" src="'+esc(NOVNC_URL)+'" style="width:100%;height:520px;border:1px solid #e5e6eb;border-radius:8px;background:#000;"></iframe>'
+          + '<div style="display:flex;gap:8px;margin-top:10px;align-items:center;">'
+          + '<input id="vnc-text" class="inp" style="flex:1;" placeholder="手机号 / 验证码：填入后点「发送到窗口」">'
+          + '<button id="vnc-send">发送到窗口</button></div>'
+          + '<div class="meta">若浏览器未提供剪贴板接口，会自动改为复制到剪贴板，你在窗口内 Ctrl+V 粘贴即可。</div>'
+          + '</div>';
+      }
+      shell += '<div id="acc-area"></div>';
+      $('#panel').innerHTML = shell;
+      PANEL_KEY = key;
+    }
+    var acc = document.getElementById('acc-area');
+    if(acc) acc.innerHTML = accHtml;
+
     if(POLL) clearInterval(POLL); POLL=null;
-    if(p.accounts.some(function(a){ return a.status==='waiting'; })) POLL=setInterval(render,3000);
+    if(needVnc) POLL=setInterval(render,3000);
     syncTestButtons();
     if(TESTPOLL) clearInterval(TESTPOLL);
     TESTPOLL = setInterval(syncTestButtons, 4000);
