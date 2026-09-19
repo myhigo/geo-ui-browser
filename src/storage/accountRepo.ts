@@ -163,6 +163,12 @@ const FIELD_MAP: Record<string, string> = {
   leasedBy: 'leased_by',
 };
 
+/** note 列写入长度保护：浏览器启动失败等报错可能很长（含 ASCII 提示框），超长截断，
+ *  避免 ER_DATA_TOO_LONG 让一次本该写入的失败状态反过来拖垮进程。 */
+const NOTE_MAX = 500;
+const clipNote = (v: unknown): unknown =>
+  typeof v === 'string' && v.length > NOTE_MAX ? v.slice(0, NOTE_MAX) : v;
+
 const SELECT_COLS = `account_code AS id, profile_dir AS dir, alias, marker, status, note,
   enabled, priority,
   UNIX_TIMESTAMP(created_at) * 1000 AS createdAt,
@@ -249,7 +255,7 @@ export class MysqlAccountRepo implements AccountRepo {
       const col = FIELD_MAP[k];
       if (!col || k === 'id') continue; // 主键不参与更新
       sets.push(`${col} = ?`);
-      vals.push(toColumnValue(k, v));
+      vals.push(toColumnValue(k, k === 'note' ? clipNote(v) : v));
     }
     if (!sets.length) return this.get(platformId, accountId);
     const [res] = await dbPool().query<ResultSetHeader>(
@@ -273,7 +279,7 @@ export class MysqlAccountRepo implements AccountRepo {
         account.alias ?? null,
         account.marker ?? null,
         account.status,
-        account.note ?? null,
+        clipNote(account.note) ?? null,
         account.dir,
         account.todayQueries ?? 0,
         account.queryDate ?? null,

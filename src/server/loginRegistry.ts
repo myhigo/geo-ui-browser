@@ -592,7 +592,8 @@ export async function startLogin(
       await accountRepo().patch(platformId, acc.id, { status: 'failed', note: '登录等待超时，未完成登录' });
     }
   })();
-  void task;
+  // 收尾是异步 fire-and-forget：任意 DB 写入失败都收敛为日志，绝不变成 unhandledRejection 拖垮进程
+  task.catch((e) => console.error('[startLogin] 登录异步收尾异常（已忽略，不影响服务进程）：', e));
   return { ok: true, msg: `登录窗口已打开（${acc.id}），请在窗口内完成登录后回到管理页点击「我已登录完成，验证」`, accountId: acc.id };
 }
 

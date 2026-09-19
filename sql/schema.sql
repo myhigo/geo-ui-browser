@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS geo_ui_platform_account (
   status            VARCHAR(16)   NOT NULL DEFAULT 'none' COMMENT 'none/waiting/active/cooling/failed',
   enabled           TINYINT(1)   NOT NULL DEFAULT 1 COMMENT '0=停用，不参与挑号',
   priority          INT          NOT NULL DEFAULT 0 COMMENT '越大越优先',
-  note              VARCHAR(512),
+  note              TEXT,
   profile_dir       VARCHAR(512) NOT NULL COMMENT '浏览器 userDataDir 绝对路径（卷内）',
   today_queries     INT          NOT NULL DEFAULT 0,
   query_date        DATE         NULL COMMENT 'YYYY-MM-DD，用于跨天归零',
