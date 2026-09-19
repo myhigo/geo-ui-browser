@@ -223,15 +223,23 @@ export async function execute(
     throw new ApiError(500, summarize(result.notes));
   }
   // 2026-09-03 17:47 用户定：截图失败/未产出 → 不整页兜底，screenshot 留空（不因缺截图判失败）
+  // ⚠️ artifactMode=none（生产默认）时，截图临时文件读完 Buffer 就被删了、sampleDir 也是空字符串，
+  //    所以不能从文件读 —— 必须优先用 run.ts 返回的内存 Buffer（qaScreenshotBuffer），
+  //    并统一走 compressToBase64 做 WebP 压缩（回推对方服务要的就是压缩后的 base64）。
   let screenshot = '';
-  const shotRel = result.artifacts.qaScreenshot;
-  if (shotRel) {
-    const shotPath = path.join(result.sampleDir, shotRel);
-    if (fs.existsSync(shotPath)) {
-      screenshot = `data:image/png;base64,${fs.readFileSync(shotPath).toString('base64')}`;
+  try {
+    const shotBuf = result.qaScreenshotBuffer;
+    if (shotBuf && shotBuf.length > 0) {
+      screenshot = await compressToBase64(shotBuf);
     } else {
-      console.log(`[${platform}] 截图文件缺失但已标记产出，忽略（screenshot 留空）`);
+      const shotRel = result.artifacts.qaScreenshot;
+      const shotPath = shotRel && result.sampleDir ? path.join(result.sampleDir, shotRel) : '';
+      if (shotPath && fs.existsSync(shotPath)) {
+        screenshot = await compressToBase64(fs.readFileSync(shotPath));
+      }
     }
+  } catch (e) {
+    console.log(`[${platform}] 截图压缩失败，screenshot 留空：${(e as Error).message}`);
   }
   const toSource = (s: SourceInfo) => ({
     title: s.title ?? '',
