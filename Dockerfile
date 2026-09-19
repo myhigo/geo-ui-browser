@@ -1,7 +1,12 @@
-# 基础镜像自带 Chromium 与系统依赖，省去手工安装
-FROM mcr.microsoft.com/playwright:v1.47.0-jammy
+# 基础镜像自带 Chromium 与系统依赖，省去手工安装。
+# ⚠️ 该 tag 必须与 package.json 里 playwright 的版本严格一致（当前锁定 1.62.1）：
+#    不一致时 npm 装的 playwright 会去找另一个版本的 chromium
+#    （例如 1.62.1 要 /ms-playwright/chromium-1234/chrome-linux64/chrome，
+#     而 v1.47.0 镜像只带 chromium-1134），登录窗口直接起不来。
+FROM mcr.microsoft.com/playwright:v1.62.1-jammy
 
-# 国内网络下 archive.ubuntu.com 经常拉不动，可用 --build-arg USE_CN_MIRROR=true 切到阿里云源
+# 国内网络下 archive.ubuntu.com 直连经常 502（v1.62.x 镜像用的是 azure.archive.ubuntu.com），
+# 可用 --build-arg USE_CN_MIRROR=true 切到阿里云源。
 ARG USE_CN_MIRROR=false
 
 # 必须在 apt 之前：tzdata 安装时会交互式询问时区，非交互构建（无 stdin）会永久挂住
@@ -10,8 +15,10 @@ ENV DEBIAN_FRONTEND=noninteractive \
     DISPLAY=:99 \
     NODE_ENV=production
 
+# 用正则匹配任意子域（archive. / azure.archive. / security.），
+# 否则 v1.62.x 镜像的 azure.archive.ubuntu.com 匹配不到、换源不生效，apt 会 502 失败
 RUN if [ "$USE_CN_MIRROR" = "true" ]; then \
-      sed -i 's|http://archive.ubuntu.com/ubuntu|https://mirrors.aliyun.com/ubuntu|g; s|http://security.ubuntu.com/ubuntu|https://mirrors.aliyun.com/ubuntu|g' /etc/apt/sources.list; \
+      sed -i -E 's|https?://[a-zA-Z0-9.-]*archive\.ubuntu\.com/ubuntu|https://mirrors.aliyun.com/ubuntu|g; s|https?://[a-zA-Z0-9.-]*security\.ubuntu\.com/ubuntu|https://mirrors.aliyun.com/ubuntu|g' /etc/apt/sources.list /etc/apt/sources.list.d/*.list 2>/dev/null || true; \
     fi
 
 # 中文字体（截图否则全是方块）+ 虚拟屏 + VNC（容器内人工登录用）+ 时区

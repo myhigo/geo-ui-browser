@@ -14,7 +14,7 @@
   "dependencies": {
     "express": "^5.2.1",
     "mysql2": "^3.24.4",
-    "playwright": "^1.47.0",
+    "playwright": "1.62.1",
     "sharp": "^0.33.5"
   },
   "devDependencies": {
