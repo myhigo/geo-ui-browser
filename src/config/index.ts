@@ -59,6 +59,8 @@ export interface AppConfig {
   chromePath?: string;
   /** 是否调用系统安装的 Chrome（本机开发用；容器里应保持 false 走自带 chromium） */
   useSystemChrome: boolean;
+  /** noVNC 页面地址，/admin 内嵌用（建议走反向代理保持同源）；留空则不显示登录窗口面板 */
+  novncUrl: string;
 }
 
 export const config: AppConfig = {
@@ -80,6 +82,7 @@ export const config: AppConfig = {
   dataRoot: env('GEO_DATA_ROOT') ?? '.',
   chromePath: env('GEO_CHROME_PATH'),
   useSystemChrome: bool('GEO_USE_SYSTEM_CHROME', false),
+  novncUrl: env('GEO_NOVNC_URL') ?? '',
 };
 
 /** 有状态数据的落地路径；dataRoot 默认为 '.' 时与重构前完全一致 */

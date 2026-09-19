@@ -135,6 +135,18 @@ GEO_PROXY_USER / _PASS / _HEALTHCHECK / _BIND_TTL_HOURS
 | `GEO_MAX_BROWSERS` | `4` | 同时打开浏览器上限 |
 | `GEO_FINGERPRINT_UA` | 自动探测 | 探测不到 Chrome 版本时显式指定 |
 | `GEO_USE_SYSTEM_CHROME` | `false` | 本机开发用系统 Chrome；容器保持 false |
+| `GEO_NOVNC_URL` | 空 | noVNC 页地址，/admin 内嵌登录窗口；空则不显示面板 |
+
+## 5.2 账号管理接口
+
+| 接口 | 说明 |
+|---|---|
+| `POST /api/accounts/:platform/:accountId/toggle` | 启停（body 可带 `enabled`，不带则取反） |
+| `POST /api/accounts/:platform/:accountId/priority` | 置顶 / 取消置顶（`priority: 1 / 0`） |
+| `POST /api/login/:platform/start` | 新增账号并开登录窗口（不带 accountId 即新开槽） |
+| `POST /api/web-collect` | 采集；body 带 `accountId` 即**手动指定账号**（停用/占用/状态异常都返回明确原因，绝不静默换号） |
+
+挑号规则：`status='active'` + `enabled!==false` + 未被占用，按 `priority*1000 - 今日次数*100 - 连续失败*2000 + 抖动` 排序。
 
 ## 6. 重构阶段
 

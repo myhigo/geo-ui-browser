@@ -1,5 +1,8 @@
 // 平台登录管理页（多账号版，极简无外部依赖）。入口 GET /admin。
-// 每个账号一张卡：id/别名/标识/状态 + 登录/退出/删除/改备注，账号间独立不串。
+// 每个账号一张卡：id/别名/标识/状态 + 登录/退出/删除/改备注 + 启停/置顶，账号间独立不串。
+// 配置了 GEO_NOVNC_URL 时，有账号处于「登录中」会内嵌 noVNC 窗口供人工扫码 / 输入验证码。
+import { config } from '../config/index.js';
+
 export function adminPageHtml(): string {
   return `<!doctype html>
 <html lang="zh">
@@ -61,6 +64,7 @@ export function adminPageHtml(): string {
 <div id="toast" class="toast"></div>
 <script>
 var CUR = null, POLL = null, SA_LAST = '', TESTPOLL = null;
+var NOVNC_URL = ${JSON.stringify(config.novncUrl)};
 var ST = { none:{t:'未登录',c:'#c9cdd4'}, waiting:{t:'登录中',c:'#ff7d00'}, active:{t:'已登录',c:'#00b42a'}, cooling:{t:'冷却中',c:'#ff7d00'}, failed:{t:'不可用',c:'#f53f3f'} };
 function $(s){ return document.querySelector(s); }
 function toast(m){ var t=$('#toast'); t.textContent=m; t.classList.add('show'); setTimeout(function(){ t.classList.remove('show'); }, 2400); }
@@ -82,12 +86,23 @@ function render(){
     menu(d.platforms||[]);
     var html = '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;"><h2>'+p.label+' · 账号管理</h2><button class="primary" data-kind="start">＋ 添加账号登录</button></div>';
     if(p.hint) html += '<div class="hint">'+esc(p.hint)+'</div>';
+    if(NOVNC_URL && p.accounts.some(function(a){ return a.status==='waiting'; })){
+      html += '<div class="acc" style="margin-bottom:14px;">'
+        + '<div class="meta" style="margin-bottom:8px;">登录窗口：请在下方窗口内完成扫码 / 输入验证码，完成后点账号卡上的「我已登录完成，验证」。</div>'
+        + '<iframe id="novnc" src="'+esc(NOVNC_URL)+'" style="width:100%;height:520px;border:1px solid #e5e6eb;border-radius:8px;background:#000;"></iframe>'
+        + '<div style="display:flex;gap:8px;margin-top:10px;align-items:center;">'
+        + '<input id="vnc-text" class="inp" style="flex:1;" placeholder="手机号 / 验证码：填入后点「发送到窗口」">'
+        + '<button id="vnc-send">发送到窗口</button></div>'
+        + '<div class="meta">若浏览器未提供剪贴板接口，会自动改为复制到剪贴板，你在窗口内 Ctrl+V 粘贴即可。</div>'
+        + '</div>';
+    }
     if(!p.accounts.length){ html += '<div class="empty">还没有账号，点右上角「添加账号登录」开第一个号。</div>'; }
     else {
       html += '<div class="acc-grid">';
       p.accounts.forEach(function(a){
       var st = ST[a.status] || {t:a.status,c:'#c9cdd4'};
-      html += '<div class="acc"><div class="acc-top"><span class="dot" style="background:'+st.c+'"></span><span class="st-label">'+st.t+(a.busy?'（使用中）':'')+'</span>'+(a.alias?'<span class="acc-alias">'+esc(a.alias)+'</span>':'')+'</div>';
+      var off = a.enabled===false;
+      html += '<div class="acc"'+(off?' style="opacity:.55"':'')+'><div class="acc-top"><span class="dot" style="background:'+st.c+'"></span><span class="st-label">'+st.t+(a.busy?'（使用中）':'')+'</span>'+(a.alias?'<span class="acc-alias">'+esc(a.alias)+'</span>':'')+(off?'<span class="meta">已停用</span>':'')+((a.priority||0)>0?'<span class="meta">置顶</span>':'')+'</div>';
       html += '<div class="meta">昵称：<b>'+esc(a.marker||'--')+'</b> ｜ 今日查询次数：<b>'+((a.todayQueries==null?0:a.todayQueries))+'</b></div>';
       if(a.note) html += '<div class="note">'+esc(a.note)+'</div>';
       html += '<div class="meta">'+(a.lastUsedAt?'最近使用：<b>'+new Date(a.lastUsedAt).toLocaleString()+'</b>':'最近使用：<b>-</b>')+(a.consecutiveFails?' ｜ 连续失败：<b>'+a.consecutiveFails+'</b>':'')+'</div>';
@@ -103,6 +118,8 @@ function render(){
       if(a.status!=='none' && a.status!=='waiting') html += '<button data-kind="logout" data-acc="'+a.id+'">退出</button>';
       if(a.status!=='waiting') {
         html += '<button data-kind="alias" data-acc="'+a.id+'">改备注</button>';
+        html += '<button data-kind="toggle" data-acc="'+a.id+'">'+(off?'启用':'停用')+'</button>';
+        html += '<button data-kind="priority" data-acc="'+a.id+'">'+((a.priority||0)>0?'取消置顶':'置顶')+'</button>';
       }
       // 仅「已登录」状态的账号显示测试按钮（active=已登录 / cooling=冷却中；none/waiting/failed 不显示）
       if(a.status==='active' || a.status==='cooling') {
@@ -289,14 +306,34 @@ function pullStatusTick(){
   }).catch(function(){});
 }
 // 事件委托：账号卡与顶部按钮统一走 data-kind / data-acc（避免内联 onclick 引号转义问题）
-function post(kind, accountId){
+function post(kind, accountId, extra){
   if(kind!=='start' && !accountId){ toast('缺少账号'); return; }
-  fetch('/api/login/'+CUR+'/'+kind, { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({accountId: accountId||undefined}) })
+  var url = (kind==='toggle'||kind==='priority')
+    ? '/api/accounts/'+CUR+'/'+accountId+'/'+kind
+    : '/api/login/'+CUR+'/'+kind;
+  var body = { accountId: accountId||undefined };
+  if(extra) for(var k in extra) body[k] = extra[k];
+  fetch(url, { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(body) })
     .then(function(r){ return r.json().catch(function(){ return {msg:'响应解析失败'}; }); })
     .then(function(j){ toast((j&&j.msg)||'已提交'); render(); })
     .catch(function(e){ toast('请求失败：'+e.message); });
 }
+// 文本注入：优先走 noVNC 的 rfb.clipboardPasteFrom，取不到就降级到剪贴板
+function sendToVnc(){
+  var t = $('#vnc-text'); if(!t || !t.value.trim()){ toast('请先填写要发送的内容'); return; }
+  var text = t.value.trim(), sent = false;
+  try {
+    var w = document.getElementById('novnc') && document.getElementById('novnc').contentWindow;
+    if(w && w.rfb && typeof w.rfb.clipboardPasteFrom === 'function'){ w.rfb.clipboardPasteFrom(text); sent = true; }
+  } catch(e) { sent = false; }
+  if(sent){ toast('已发送到登录窗口'); return; }
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(text).then(function(){ toast('已复制到剪贴板，请在窗口内 Ctrl+V 粘贴'); },
+      function(){ toast('复制失败，请手动输入'); });
+  } else { toast('无法自动发送，请手动输入'); }
+}
 document.addEventListener('click', function(ev){
+  if(ev.target && ev.target.closest && ev.target.closest('#vnc-send')){ sendToVnc(); return; }
   var b = ev.target && ev.target.closest ? ev.target.closest('button[data-kind]') : null;
   if(!b || !CUR) return;
   if(b.hasAttribute('disabled')) return; // 已登录态：登录按钮置灰，禁止触发
@@ -311,6 +348,12 @@ document.addEventListener('click', function(ev){
     return;
   }
   if(kind==='delete' && !confirm('确认删除账号 '+(acc||'')+'？目录与登录态都会被清掉。')) return;
+  if(kind==='toggle'){ post(kind, acc); return; }
+  if(kind==='priority'){
+    var isTop = b.textContent === '取消置顶';
+    post(kind, acc, { priority: isTop ? 0 : 1 });
+    return;
+  }
   post(kind, acc);
 });
 fetch('/api/login/platforms').then(function(r){ return r.json(); }).then(function(d){

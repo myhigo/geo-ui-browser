@@ -17,6 +17,9 @@ import {
 import {
   LOGIN_DRIVERS,
   allocateAccount,
+  allocateSpecificAccount,
+  setAccountEnabled,
+  setAccountPriority,
   confirmLogin,
   deleteAccount,
   listViews,
@@ -31,6 +34,7 @@ import {
 } from './loginRegistry.js';
 import { adminPageHtml } from './loginUI.js';
 import { config, paths, describeConfig } from '../config/index.js';
+import { accountRepo } from '../storage/accountRepo.js';
 import { pingDb, releaseStaleLeases } from '../db/pool.js';
 import { identityRepo } from '../storage/identityRepo.js';
 
@@ -139,7 +143,8 @@ async function releaseIdentity(platform: string, loginRequired: boolean): Promis
 export async function execute(
   platform: string,
   keyword: string,
-  headed: boolean
+  headed: boolean,
+  accountId?: string
 ): Promise<{ screenshot: string; answer: string; sources: { title: string; url: string; siteName: string }[] }> {
   let userDataDir: string | undefined = path.join(paths.profilesRoot, platform);
   let waitLoginMs = 0;
@@ -153,7 +158,10 @@ export async function execute(
   const rotation = isLoginPlatform ? undefined : ROTATIONS[platform];
   const reactive = isLoginPlatform ? false : REACTIVE_RESET_PLATFORMS.has(platform);
   if (loginDriver?.loginRequired) {
-    const ready = await allocateAccount(platform);
+    // 指定账号优先（手动切换）；校验失败直接返回原因，绝不静默换号
+    const ready = accountId
+      ? await allocateSpecificAccount(platform, accountId)
+      : await allocateAccount(platform);
     if (!ready.ok) throw new ApiError(409, ready.reason ?? `${platform} 没有可用登录账号`);
     ledgerAccountId = ready.accountId;
     userDataDir = ready.dir;
@@ -266,6 +274,9 @@ app.post('/api/web-collect', (req, res) => {
   const platform = rawPlatform;
   const keyword = typeof body.keyword === 'string' ? body.keyword.trim() : '';
   const headed = body.headed === true;
+  // 手动切换账号：指定 accountId（不传则按策略自动挑号）
+  const accountId =
+    typeof body.accountId === 'string' && body.accountId.trim() ? body.accountId.trim() : undefined;
 
   if (!platform || !PLATFORMS[platform]) {
     res
@@ -279,7 +290,7 @@ app.post('/api/web-collect', (req, res) => {
   }
 
   enqueue(platform, async () => {
-    const data = await withTimeout(execute(platform, keyword, headed));
+    const data = await withTimeout(execute(platform, keyword, headed, accountId));
     res.status(200).json(data);
   }).catch((e: unknown) => {
     if (res.headersSent) return;
@@ -591,6 +602,28 @@ app.post('/api/login/:platform/alias', async (req, res) => {  const id = String(
 });
 
 // 打开某账号的测试窗口（手动聊天，不跑自动化）
+// 启停账号：停用后不参与挑号
+app.post('/api/accounts/:platform/:accountId/toggle', async (req, res) => {
+  const platform = String(req.params.platform).toLowerCase();
+  const accountId = String(req.params.accountId);
+  const want = (req.body ?? {}) as { enabled?: unknown };
+  const acc = await accountRepo().get(platform, accountId);
+  if (!acc) { res.status(404).json({ msg: '账号不存在' }); return; }
+  const enabled = want.enabled === undefined ? acc.enabled === false : want.enabled === true;
+  const r = await setAccountEnabled(platform, accountId, enabled);
+  res.status(r.ok ? 200 : 400).json({ msg: r.msg, enabled });
+});
+
+// 置顶 / 取消置顶：priority 越大越优先被挑中
+app.post('/api/accounts/:platform/:accountId/priority', async (req, res) => {
+  const platform = String(req.params.platform).toLowerCase();
+  const accountId = String(req.params.accountId);
+  const b = (req.body ?? {}) as { priority?: unknown };
+  const priority = typeof b.priority === 'number' ? b.priority : 1;
+  const r = await setAccountPriority(platform, accountId, priority);
+  res.status(r.ok ? 200 : 400).json({ msg: r.msg, priority });
+});
+
 app.post('/api/login/:platform/test', (req, res) => {
   const id = String(req.params.platform).toLowerCase();
   if (!(id in LOGIN_DRIVERS)) {

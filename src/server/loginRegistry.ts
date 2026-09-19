@@ -154,8 +154,32 @@ export async function listViews(): Promise<PlatformView[]> {
 }
 
 export async function updateAlias(platformId: string, accountId: string, alias: string): Promise<{ ok: boolean; msg: string }> {
-  if (!await accountRepo().patch(platformId, accountId, { alias })) return { ok: false, msg: '账号不存在' };
+  if (!(await accountRepo().patch(platformId, accountId, { alias }))) return { ok: false, msg: '账号不存在' };
   return { ok: true, msg: '备注已更新' };
+}
+
+/** 启停账号：停用后不参与挑号（已占用的任务跑完为止） */
+export async function setAccountEnabled(
+  platformId: string,
+  accountId: string,
+  enabled: boolean
+): Promise<{ ok: boolean; msg: string }> {
+  const acc = await accountRepo().get(platformId, accountId);
+  if (!acc) return { ok: false, msg: '账号不存在' };
+  await accountRepo().patch(platformId, accountId, { enabled });
+  return { ok: true, msg: `${accountId} 已${enabled ? '启用' : '停用'}` };
+}
+
+/** 置顶/取消置顶：priority 越大越优先被挑中 */
+export async function setAccountPriority(
+  platformId: string,
+  accountId: string,
+  priority: number
+): Promise<{ ok: boolean; msg: string }> {
+  const acc = await accountRepo().get(platformId, accountId);
+  if (!acc) return { ok: false, msg: '账号不存在' };
+  await accountRepo().patch(platformId, accountId, { priority });
+  return { ok: true, msg: priority > 0 ? `${accountId} 已置顶` : `${accountId} 已取消置顶` };
 }
 
 /** 删除整个账号（清目录 + 台账移除） */
@@ -208,9 +232,11 @@ export interface ReadyCheck {
 /** 分配一个可用的已登录账号（只挑 active 且空闲；无可用 → 返回原因） */
 export async function allocateAccount(platformId: string): Promise<ReadyCheck> {
   const accounts = await accountRepo().list(platformId);
-  const usable = accounts.filter((a) => a.status === 'active' && !isAccountBusy(a.id));
+  const usable = accounts.filter(
+    (a) => a.status === 'active' && a.enabled !== false && !isAccountBusy(a.id)
+  );
   if (usable.length === 0) {
-    const any = accounts.some((a) => ['failed', 'cooling', 'none'].includes(a.status));
+    const any = accounts.some((a) => ['failed', 'cooling', 'none'].includes(a.status) || a.enabled === false);
     const label = LOGIN_DRIVERS[platformId]?.label ?? platformId;
     return {
       ok: false,
@@ -237,6 +263,18 @@ export async function allocateAccount(platformId: string): Promise<ReadyCheck> {
   // 占用落库（跨重启/多机可见）；失败不阻断，内存 inFlight 已保证本进程内互斥
   await accountRepo().patch(platformId, pick.id, { leasedBy: instanceId }).catch(() => {});
   return { ok: true, accountId: pick.id, dir: pick.dir };
+}
+
+/** 手动指定账号：状态/启用/占用全部校验，任一不满足即给明确原因（不静默换号） */
+export async function allocateSpecificAccount(platformId: string, accountId: string): Promise<ReadyCheck> {
+  const acc = await accountRepo().get(platformId, accountId);
+  if (!acc) return { ok: false, reason: `账号不存在：${accountId}` };
+  if (acc.enabled === false) return { ok: false, reason: `账号 ${accountId} 已停用，请先启用` };
+  if (acc.status !== 'active') return { ok: false, reason: `账号 ${accountId} 当前状态为 ${acc.status}，不可用` };
+  if (isAccountBusy(accountId)) return { ok: false, reason: `账号 ${accountId} 正在使用中` };
+  inFlight.add(accountId);
+  await accountRepo().patch(platformId, accountId, { leasedBy: instanceId }).catch(() => {});
+  return { ok: true, accountId, dir: acc.dir };
 }
 
 export async function releaseAccount(platformId: string, accountId: string, success: boolean, loginRequired: boolean): Promise<void> {
