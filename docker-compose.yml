@@ -1,0 +1,37 @@
+services:
+  geo:
+    build: .
+    image: geo-ui-browser:latest
+    container_name: geo-ui-browser
+    restart: unless-stopped
+    # 仅映射到本机；生产请只开内网，不要用 0.0.0.0
+    ports:
+      - "127.0.0.1:8787:8787"   # API + /admin
+      - "127.0.0.1:6080:6080"   # noVNC（/admin 内嵌或直连）
+    environment:
+      TZ: Asia/Shanghai
+      GEO_NODE_ID: ${GEO_NODE_ID:-default}
+      GEO_STORAGE: ${GEO_STORAGE:-mysql}
+      DB_HOST: ${DB_HOST:-}
+      DB_PORT: ${DB_PORT:-3306}
+      DB_USER: ${DB_USER:-}
+      DB_PASSWORD: ${DB_PASSWORD:-}
+      DB_NAME: ${DB_NAME:-}
+      GEO_DATA_ROOT: /data/geo
+      GEO_PULL_HOST: ${GEO_PULL_HOST:-}
+      GEO_NOVNC_URL: ${GEO_NOVNC_URL:-/novnc/vnc.html?autoconnect=1&resize=scale}
+      GEO_ARTIFACT_MODE: ${GEO_ARTIFACT_MODE:-none}
+      GEO_HEADLESS: ${GEO_HEADLESS:-true}
+      GEO_MAX_BROWSERS: ${GEO_MAX_BROWSERS:-4}
+      GEO_MAX_PER_EGRESS: ${GEO_MAX_PER_EGRESS:-1}
+      GEO_TIMEOUT_MS: ${GEO_TIMEOUT_MS:-180000}
+    volumes:
+      - ./data:/data/geo          # 唯一有状态的部分：浏览器 profile
+    shm_size: "1gb"               # 默认 64MB 会让 Chrome 崩
+    stop_grace_period: 30s        # 留给优雅退出关浏览器
+
+# 本机想跑"不接数据库"的空跑测试：
+#   echo "GEO_STORAGE=file" > .env && docker compose up -d
+# 连宿主机 MySQL（Linux 需再加 extra_hosts）：
+#   extra_hosts:
+#     - "host.docker.internal:host-gateway"

@@ -1,0 +1,18 @@
+node_modules/
+dist/
+npm-debug.log*
+.git/
+.github/
+*.md.bak
+
+# 运行产物（不进镜像；容器内靠挂载卷）
+.profiles/
+diagnostics/
+analysis/
+data/
+
+# 本地测试副本
+shot-smoke.tmp.mts
+.env
+.env.*
+!.env.example

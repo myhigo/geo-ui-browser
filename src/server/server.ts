@@ -37,6 +37,8 @@ import { config, paths, describeConfig } from '../config/index.js';
 import { accountRepo } from '../storage/accountRepo.js';
 import { pingDb, releaseStaleLeases } from '../db/pool.js';
 import { identityRepo } from '../storage/identityRepo.js';
+import { compressToBase64 } from '../storage/shotCompressor.js';
+import { installShutdownHandlers, isShuttingDown } from '../runtime/shutdown.js';
 
 const PORT = config.port;
 const TIMEOUT_MS = config.timeoutMs;
@@ -266,6 +268,15 @@ function withTimeout<T>(p: Promise<T>): Promise<T> {
 
 const app = express();
 app.use(express.json({ limit: '1mb' }));
+
+// 健康检查（容器 HEALTHCHECK 用）：正在关闭时返回 503，便于编排层摘流量
+app.get('/healthz', (_req, res) => {
+  res.status(isShuttingDown() ? 503 : 200).json({
+    ok: !isShuttingDown(),
+    node: config.nodeId,
+    storage: config.storage,
+  });
+});
 
 // 采集问答
 app.post('/api/web-collect', (req, res) => {
@@ -655,6 +666,7 @@ app.post('/api/login/:platform/test-close', (req, res) => {
 
 // 启动 API 服务（按用户要求：启动时不打印日志）
 export async function startServer(): Promise<void> {
+  installShutdownHandlers();
   console.log(`[config] ${describeConfig()}`);
   if (config.storage === 'mysql') {
     // 连不上就在这里炸掉：绝不静默降级到文件存储（会导致"以为写库了其实写文件"）

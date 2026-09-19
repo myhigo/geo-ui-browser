@@ -133,6 +133,8 @@ GEO_PROXY_USER / _PASS / _HEALTHCHECK / _BIND_TTL_HOURS
 | `GEO_ARTIFACT_MODE` | `none` | `debug` 时落 diagnostics/ 供校准 selector |
 | `GEO_HEADLESS` | `true` | 采集是否无头 |
 | `GEO_MAX_BROWSERS` | `4` | 同时打开浏览器上限 |
+| `GEO_MAX_PER_EGRESS` | `1` | 同一出口 IP 同时跑的任务上限（1=最安全，确认无风控后再调大） |
+| `GEO_SHOT_FORMAT` / `_QUALITY` / `_MAX_WIDTH` / `_MAX_BYTES` | webp / 80 / 900 / 300KB | 截图压缩参数 |
 | `GEO_FINGERPRINT_UA` | 自动探测 | 探测不到 Chrome 版本时显式指定 |
 | `GEO_USE_SYSTEM_CHROME` | `false` | 本机开发用系统 Chrome；容器保持 false |
 | `GEO_NOVNC_URL` | 空 | noVNC 页地址，/admin 内嵌登录窗口；空则不显示面板 |
@@ -147,6 +149,21 @@ GEO_PROXY_USER / _PASS / _HEALTHCHECK / _BIND_TTL_HOURS
 | `POST /api/web-collect` | 采集；body 带 `accountId` 即**手动指定账号**（停用/占用/状态异常都返回明确原因，绝不静默换号） |
 
 挑号规则：`status='active'` + `enabled!==false` + 未被占用，按 `priority*1000 - 今日次数*100 - 连续失败*2000 + 抖动` 排序。
+
+## 5.3 部署（Docker）
+
+```bash
+cp .env.example .env    # 填 DB_* 等
+docker compose up -d
+docker compose logs -f
+curl http://127.0.0.1:8787/healthz
+```
+
+- 容器内进程：`Xvfb :99` + `x11vnc` + `websockify(noVNC 6080)` + `node dist/cli.js --server`，共享 `DISPLAY=:99`
+- 唯一有状态的是挂载的 `./data:/data/geo`（浏览器 profile）
+- `shm_size: 1gb` 必填（默认 64MB 会让 Chrome 崩）
+- `stop_grace_period: 30s` 留给优雅退出；SIGTERM 会关闭所有浏览器再退出，不留僵尸进程
+- `/healthz` 供容器健康检查；正在关闭时返回 503
 
 ## 6. 重构阶段
 

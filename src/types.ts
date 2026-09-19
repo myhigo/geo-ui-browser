@@ -81,7 +81,10 @@ export interface DiagnosticResult {
   sources: SourceInfo[] | null; // null = 定位不到信源区
   sourceCount: number | null; // 0 / 正整数 / null(定位不到)
   elementDiagnosis: ElementDiagnosisItem[];
-  sampleDir: string; // 样本根目录（绝对路径），供截图等产物读取
+  /** 样本根目录（绝对路径）；artifactMode=none 时不落盘，此值为空串 */
+  sampleDir: string;
   artifacts: DiagnosticArtifacts;
   notes: string[]; // 人工可读提示
+  /** 长截图内容（artifactMode=none 时直接给 Buffer，调用方无需读盘） */
+  qaScreenshotBuffer?: Buffer;
 }

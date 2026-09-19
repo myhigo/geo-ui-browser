@@ -2,6 +2,7 @@ import { runDiagnostic } from './diagnostics/run.js';
 import { startServer } from './server/server.js';
 import { LOGIN_DRIVERS, allocateAccount, releaseAccount } from './server/loginRegistry.js';
 import { config, paths } from './config/index.js';
+import { installShutdownHandlers } from './runtime/shutdown.js';
 import path from 'path';
 
 const args = process.argv.slice(2);
@@ -17,6 +18,7 @@ if (args.includes('--server')) {
 }
 
 async function main(): Promise<void> {
+  installShutdownHandlers();
   const qi = args.indexOf('--question');
   const question =
     qi >= 0 && args[qi + 1] ? args[qi + 1] : '请介绍一下人工智能在医疗领域有哪些应用？';

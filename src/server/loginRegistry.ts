@@ -14,6 +14,7 @@ import { firstFound } from '../diagnostics/elementProbe.js';
 import { accountRepo, profileDirOf, Account, AccountStatus } from '../storage/accountRepo.js';
 import { config, paths } from '../config/index.js';
 import { fingerprint } from '../config/fingerprint.js';
+import { egressKeyOf, egressAvailable, acquireEgress, releaseEgress } from '../runtime/egress.js';
 
 export type { Account, AccountStatus };
 
@@ -232,17 +233,26 @@ export interface ReadyCheck {
 /** 分配一个可用的已登录账号（只挑 active 且空闲；无可用 → 返回原因） */
 export async function allocateAccount(platformId: string): Promise<ReadyCheck> {
   const accounts = await accountRepo().list(platformId);
+  // 出口闸门：同一出口（未配代理即服务器默认出口）并发达上限的账号先排除
   const usable = accounts.filter(
-    (a) => a.status === 'active' && a.enabled !== false && !isAccountBusy(a.id)
+    (a) =>
+      a.status === 'active' &&
+      a.enabled !== false &&
+      !isAccountBusy(a.id) &&
+      egressAvailable(egressKeyOf(a))
   );
   if (usable.length === 0) {
     const any = accounts.some((a) => ['failed', 'cooling', 'none'].includes(a.status) || a.enabled === false);
+    const busyEgress =
+      !any && accounts.some((a) => a.status === 'active' && a.enabled !== false && !egressAvailable(egressKeyOf(a)));
     const label = LOGIN_DRIVERS[platformId]?.label ?? platformId;
     return {
       ok: false,
-      reason: any
-        ? `「${label}」没有可用账号（active 缺失），请到 /admin 查看各账号状态并补登`
-        : `「${label}」未登录任何账号，请先到 /admin 登录`,
+      reason: busyEgress
+        ? `「${label}」当前出口并发已满（GEO_MAX_PER_EGRESS=${config.maxPerEgress}），请稍后重试`
+        : any
+          ? `「${label}」没有可用账号（active 缺失），请到 /admin 查看各账号状态并补登`
+          : `「${label}」未登录任何账号，请先到 /admin 登录`,
     };
   }
   const now = Date.now();
@@ -260,6 +270,7 @@ export async function allocateAccount(platformId: string): Promise<ReadyCheck> {
     .sort((x, y) => y.score - x.score);
   const pick = scored[0].a;
   inFlight.add(pick.id);
+  acquireEgress(egressKeyOf(pick));
   // 占用落库（跨重启/多机可见）；失败不阻断，内存 inFlight 已保证本进程内互斥
   await accountRepo().patch(platformId, pick.id, { leasedBy: instanceId }).catch(() => {});
   return { ok: true, accountId: pick.id, dir: pick.dir };
@@ -272,13 +283,18 @@ export async function allocateSpecificAccount(platformId: string, accountId: str
   if (acc.enabled === false) return { ok: false, reason: `账号 ${accountId} 已停用，请先启用` };
   if (acc.status !== 'active') return { ok: false, reason: `账号 ${accountId} 当前状态为 ${acc.status}，不可用` };
   if (isAccountBusy(accountId)) return { ok: false, reason: `账号 ${accountId} 正在使用中` };
+  if (!egressAvailable(egressKeyOf(acc)))
+    return { ok: false, reason: `账号 ${accountId} 所属出口并发已满（GEO_MAX_PER_EGRESS=${config.maxPerEgress}），请稍后重试` };
   inFlight.add(accountId);
+  acquireEgress(egressKeyOf(acc));
   await accountRepo().patch(platformId, accountId, { leasedBy: instanceId }).catch(() => {});
   return { ok: true, accountId, dir: acc.dir };
 }
 
 export async function releaseAccount(platformId: string, accountId: string, success: boolean, loginRequired: boolean): Promise<void> {
   inFlight.delete(accountId);
+  const relAcc = await accountRepo().get(platformId, accountId);
+  if (relAcc) releaseEgress(egressKeyOf(relAcc));
   await accountRepo().patch(platformId, accountId, { leasedBy: null }).catch(() => {});
   const acc = await accountRepo().get(platformId, accountId);
   if (!acc) return;

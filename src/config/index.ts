@@ -53,6 +53,8 @@ export interface AppConfig {
   headless: boolean;
   /** 同时打开浏览器的上限 */
   maxBrowsers: number;
+  /** 同一出口 IP 上同时跑的任务上限（1=同一 IP 串行，最安全；调大提速但风控风险上升） */
+  maxPerEgress: number;
   /** 有状态数据的根目录；默认当前工作目录（保持与重构前一致） */
   dataRoot: string;
   /** 显式指定 Chrome 可执行文件路径（不指定则用 Playwright 自带 chromium） */
@@ -61,6 +63,16 @@ export interface AppConfig {
   useSystemChrome: boolean;
   /** noVNC 页面地址，/admin 内嵌用（建议走反向代理保持同源）；留空则不显示登录窗口面板 */
   novncUrl: string;
+  shot: {
+    /** 输出格式：webp 体积远小于 png，文字边缘优于 jpeg */
+    format: 'webp' | 'jpeg' | 'png';
+    /** 起始质量，压缩后仍超限会逐步下调 */
+    quality: number;
+    /** 宽度上限，超出等比缩小 */
+    maxWidth: number;
+    /** 目标字节上限 */
+    maxBytes: number;
+  };
 }
 
 export const config: AppConfig = {
@@ -79,10 +91,20 @@ export const config: AppConfig = {
   artifactMode: env('GEO_ARTIFACT_MODE') === 'debug' ? 'debug' : 'none',
   headless: bool('GEO_HEADLESS', true),
   maxBrowsers: num('GEO_MAX_BROWSERS', 4),
+  maxPerEgress: num('GEO_MAX_PER_EGRESS', 1),
   dataRoot: env('GEO_DATA_ROOT') ?? '.',
   chromePath: env('GEO_CHROME_PATH'),
   useSystemChrome: bool('GEO_USE_SYSTEM_CHROME', false),
   novncUrl: env('GEO_NOVNC_URL') ?? '',
+  shot: {
+    format: (env('GEO_SHOT_FORMAT') === 'jpeg' ? 'jpeg' : env('GEO_SHOT_FORMAT') === 'png' ? 'png' : 'webp') as
+      | 'webp'
+      | 'jpeg'
+      | 'png',
+    quality: num('GEO_SHOT_QUALITY', 80),
+    maxWidth: num('GEO_SHOT_MAX_WIDTH', 900),
+    maxBytes: num('GEO_SHOT_MAX_BYTES', 300 * 1024),
+  },
 };
 
 /** 有状态数据的落地路径；dataRoot 默认为 '.' 时与重构前完全一致 */

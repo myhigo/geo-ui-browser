@@ -9,6 +9,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import { chromium, Browser, BrowserContext, Page } from 'playwright';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { resolvePlatform, PlatformDef } from '../platforms/index.js';
 import { probeElements } from './elementProbe.js';
@@ -17,6 +18,7 @@ import { DiagnosticResult, ElementDiagnosisItem, SourceInfo, ScreenshotMode } fr
 import { LOGIN_DRIVERS, extractAccountMarker } from '../server/loginRegistry.js';
 import { config } from '../config/index.js';
 import { fingerprint, Fingerprint } from '../config/fingerprint.js';
+import { trackContext, untrackContext, trackBrowser, untrackBrowser } from '../runtime/shutdown.js';
 
 function ts(): string {
   const d = new Date();
@@ -116,20 +118,21 @@ export async function runDiagnostic(
     launchOpts.channel = 'chrome';
   }
   const stamp = ts(); // YYYY-MM-DD_HH-MM-SS（报告内时间字段）
-  // 样本目录规则（2026-09-02 用户定）：diagnostics/<平台>/<日>/<时间点>-<查询名称>
+  // 产物模式：debug=落 diagnostics/ 供 selector 校准；none=完全不落盘（生产默认，只把长截图交给调用方）
+  const debug = config.artifactMode === 'debug';
   const [day, time] = stamp.split('_');
   const queryName =
     question.replace(/[\\/:*?"<>|\s]+/g, '').slice(0, 50) || '未命名';
   let root = path.resolve(`diagnostics/${def.id}/${day}/${time}-${queryName}`);
   let seq = 2; // 同秒同名去重
-  while (fs.existsSync(root)) {
+  while (debug && fs.existsSync(root)) {
     root = path.resolve(`diagnostics/${def.id}/${day}/${time}-${queryName}-${seq}`);
     seq++;
   }
   const dirS = path.join(root, 'screenshot');
   const dirP = path.join(root, 'page');
   const dirN = path.join(root, 'network');
-  [dirS, dirP, dirN].forEach((d) => fs.mkdirSync(d, { recursive: true }));
+  if (debug) [dirS, dirP, dirN].forEach((d) => fs.mkdirSync(d, { recursive: true }));
 
   const contextOpts: Parameters<Browser['newContext']>[0] = {
     viewport: fp.viewport,
@@ -137,7 +140,8 @@ export async function runDiagnostic(
     timezoneId: fp.timezoneId,
     deviceScaleFactor: fp.deviceScaleFactor,
     acceptDownloads: false, // 不触发任何下载行为，避免系统下载条/对话框
-    recordHar: { path: path.join(dirN, 'network.har') },
+    // HAR 内存与体积开销大，仅 debug 模式记录
+    ...(debug ? { recordHar: { path: path.join(dirN, 'network.har') } } : {}),
     // ⚠️ 不再硬编码 macOS UA（与 Linux 服务器矛盾 = 主动暴露），改为按实际 Chrome 版本动态拼接
     userAgent: fp.userAgent,
   };
@@ -156,6 +160,9 @@ export async function runDiagnostic(
     browser = await chromium.launch(launchOpts);
     context = await browser.newContext(contextOpts);
   }
+  // 注册到优雅退出表：容器停止时能被关掉，不留僵尸进程
+  trackContext(context);
+  trackBrowser(browser);
   // 反自动化指纹脚本：在每一个新文档（含跨域 iframe）最早时机注入，
   // 抹掉 webdriver 标记并补全几处真实桌面浏览器应有的字段，降低阿里等风控的环境判定。
   // ⚠️ 只是"看起来像真人浏览器"，**不破解/不绕过**任何验证码或登录。
@@ -217,6 +224,7 @@ export async function runDiagnostic(
   let qaOk = false;
   let beforeHtml = '';
   let finishedHtml = '';
+  let qaShotBuffer: Buffer | undefined;
 
   try {
     // 阶段1：打开页面 + 留 before 现场（尽早存盘，确保任何后续失败都有现场可查）
@@ -298,10 +306,12 @@ export async function runDiagnostic(
       }
 
       await page.waitForTimeout(1500);
-      await page.screenshot({ path: path.join(dirS, '01-before.png') });
-      capturedShots.push('01-before.png');
-      beforeHtml = await page.content();
-      fs.writeFileSync(path.join(dirP, 'before.html'), beforeHtml);
+      if (debug) {
+        await page.screenshot({ path: path.join(dirS, '01-before.png') });
+        capturedShots.push('01-before.png');
+        beforeHtml = await page.content();
+        fs.writeFileSync(path.join(dirP, 'before.html'), beforeHtml);
+      }
     } catch (e) {
       notes.push(`❌ 打开页面失败：${(e as Error).message}`);
     }
@@ -354,9 +364,11 @@ export async function runDiagnostic(
             .waitForSelector('textarea, input, [contenteditable="true"]', { timeout: 20000 })
             .catch(() => {});
           await page.waitForTimeout(2500);
-          await page.screenshot({ path: path.join(dirS, '01-before.png') });
-          beforeHtml = await page.content();
-          fs.writeFileSync(path.join(dirP, 'before.html'), beforeHtml);
+          if (debug) {
+            await page.screenshot({ path: path.join(dirS, '01-before.png') });
+            beforeHtml = await page.content();
+            fs.writeFileSync(path.join(dirP, 'before.html'), beforeHtml);
+          }
         } else {
           notes.push(
             `⚠️ 等待人工登录超时（${Math.round(opts.waitLoginMs / 1000)}s），本次按未登录继续。`
@@ -412,15 +424,17 @@ export async function runDiagnostic(
             await page.waitForTimeout(1500);
             await adapter.sendQuestion(question);
           };
-          const solved = await adapter.solveCaptcha(root, restart);
+          const solved = await adapter.solveCaptcha(debug ? root : undefined, restart);
           if (solved) notes.push('🔓 已自动/人工通过滑动验证。');
         }
       } catch (e) {
         notes.push(`滑动验证处理异常（不影响后续）：${(e as Error).message}`);
       }
 
-      await page.screenshot({ path: path.join(dirS, '02-question.png') });
-      capturedShots.push('02-question.png');
+      if (debug) {
+        await page.screenshot({ path: path.join(dirS, '02-question.png') });
+        capturedShots.push('02-question.png');
+      }
       // 03 截图前等「回答开始渲染」：元素驱动（回答容器/加载胶囊出现），替代固定 1.5s——
       // 不同问题思考时间不同，固定时间会不适配。最多轮询 15 次（整体保护）后仍没开始就截现状。
       for (let i = 0; i < 15; i++) {
@@ -435,13 +449,17 @@ export async function runDiagnostic(
         if (started) break;
         await page.waitForTimeout(1000);
       }
-      await page.screenshot({ path: path.join(dirS, '03-answering.png') });
-      capturedShots.push('03-answering.png');
+      if (debug) {
+        await page.screenshot({ path: path.join(dirS, '03-answering.png') });
+        capturedShots.push('03-answering.png');
+      }
 
       // 豆包等无文字级"生成结束"标志的平台：生成中途落盘一份 DOM，用于定标结束标志
-      await adapter.waitForAnswer(180000, path.join(root, 'page', 'answering.html'));
-      await page.screenshot({ path: path.join(dirS, '04-finished.png') });
-      capturedShots.push('04-finished.png');
+      await adapter.waitForAnswer(180000, debug ? path.join(root, 'page', 'answering.html') : undefined);
+      if (debug) {
+        await page.screenshot({ path: path.join(dirS, '04-finished.png') });
+        capturedShots.push('04-finished.png');
+      }
     } catch (e) {
       notes.push(`⚠️ 交互流程中断（多为元素未定位）：${(e as Error).message}`);
     }
@@ -464,7 +482,10 @@ export async function runDiagnostic(
       //    本层只做编排：何时截、输出到哪、失败兜底。诊断日志在实现内部打印。
       //    **2026-09-03 17:47 用户定：截图失败/未实现 → 不整页兜底（不许截当前屏），
       //    本轮无 Q&A 截图（留空）**。成功判定 = 文件存在且 >3KB。
-      const outPath = path.join(dirS, '05-qa-block.png');
+      // none 模式不落盘：截到临时文件，读完 Buffer 立即删除（Adapter 签名不变，各平台零改动）
+      const outPath = debug
+        ? path.join(dirS, '05-qa-block.png')
+        : path.join(os.tmpdir(), `geo-qa-${Date.now()}-${Math.random().toString(36).slice(2)}.png`);
       if (typeof adapter.captureQaScreenshot === 'function') {
         try {
           await adapter.captureQaScreenshot(outPath, opts.screenshotMode || 'expand');
@@ -475,7 +496,9 @@ export async function runDiagnostic(
           const st = fs.statSync(outPath);
           if (st.size > 3000) {
             qaOk = true;
-            capturedShots.push('05-qa-block.png');
+            qaShotBuffer = fs.readFileSync(outPath);
+            if (debug) capturedShots.push('05-qa-block.png');
+            else fs.rmSync(outPath, { force: true }); // 用完即删，磁盘不留痕
           } else {
             fs.rmSync(outPath, { force: true });
             notes.push('⚠️ Q&A 截图未产出有效图（按要求不整页兜底），本轮无 Q&A 截图');
@@ -495,7 +518,7 @@ export async function runDiagnostic(
         notes.push(`展开信源异常：${(e as Error).message}`);
       }
       try {
-        sources = await adapter.getSources(root);
+        sources = await adapter.getSources(debug ? root : undefined);
         if (sources === null)
           notes.push('未定位到信源区域（sourceArea 候选均不匹配）→ 匿名路径可能不展示信源，或需登录。');
       } catch (e) {
@@ -505,8 +528,10 @@ export async function runDiagnostic(
       notes.push('未成功发送问题，跳过回答/信源抽取。请检查 sendButton 候选 selector。');
     }
 
-    finishedHtml = (await page.content().catch(() => beforeHtml)) || beforeHtml;
-    fs.writeFileSync(path.join(dirP, 'finished.html'), finishedHtml); // 现场留档（诊断用，非截图来源）
+    if (debug) {
+      finishedHtml = (await page.content().catch(() => beforeHtml)) || beforeHtml;
+      fs.writeFileSync(path.join(dirP, 'finished.html'), finishedHtml); // 现场留档（诊断用，非截图来源）
+    }
 
     try {
       elementDiagnosis = await probeElements(page, def.selectors);
@@ -525,7 +550,8 @@ export async function runDiagnostic(
       sources,
       sourceCount: sources === null ? null : sources.length,
       elementDiagnosis,
-      sampleDir: root,
+      sampleDir: debug ? root : '',
+      qaScreenshotBuffer: qaShotBuffer,
       artifacts: {
         screenshots: capturedShots.map((f) => `screenshot/${f}`),
         qaScreenshot: qaOk ? 'screenshot/05-qa-block.png' : undefined,
@@ -536,15 +562,21 @@ export async function runDiagnostic(
       },
       notes,
     };
-    fs.writeFileSync(path.join(root, 'result.json'), JSON.stringify(result, null, 2));
-    await writeReport(root, result, def.label);
-    console.log(`✅ 诊断完成（部分失败也会留现场），样本库：${path.relative(process.cwd(), root)}`);
+    if (debug) {
+      fs.writeFileSync(path.join(root, 'result.json'), JSON.stringify(result, null, 2));
+      await writeReport(root, result, def.label);
+      console.log(`✅ 诊断完成（部分失败也会留现场），样本库：${path.relative(process.cwd(), root)}`);
+    } else {
+      console.log(`✅ 采集完成（artifactMode=none，未落盘任何产物）`);
+    }
   } catch (e) {
     notes.push(`❌ 诊断异常：${(e as Error).message}`);
     console.error('诊断异常：', (e as Error).message);
   } finally {
     await context.close().catch(() => {});
     await browser.close().catch(() => {});
+    untrackContext(context);
+    untrackBrowser(browser);
   }
 
   notes.forEach((n) => console.log(n));
