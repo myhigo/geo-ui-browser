@@ -88,8 +88,11 @@ function render(){
     var p = (d.platforms||[]).filter(function(x){ return x.platformId===CUR; })[0];
     if(!p) return;
     menu(d.platforms||[]);
-    // 是否需要登录窗口（有 waiting 账号时）
-    var needVnc = !!(NOVNC_URL && p.accounts.some(function(a){ return a.status==='waiting'; }));
+    // 是否需要 noVNC 窗口：有 waiting（登录中）账号 → 登录窗口；有 testing（测试窗口）账号 → 测试窗口
+    // 测试窗口同样开在容器虚拟屏上，不弹 iframe 用户就看不到浏览器，故一并显示。
+    var needLogin = p.accounts.some(function(a){ return a.status==='waiting'; });
+    var needTest = p.accounts.some(function(a){ return a.testing; });
+    var needVnc = !!(NOVNC_URL && (needLogin || needTest));
 
     // —— 账号卡片（每次刷新）——
     var accHtml;
@@ -139,8 +142,11 @@ function render(){
       var shell = '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;"><h2>'+p.label+' · 账号管理</h2><button class="primary" data-kind="start">＋ 添加账号登录</button></div>';
       if(p.hint) shell += '<div class="hint">'+esc(p.hint)+'</div>';
       if(needVnc){
+        var vncHint = '';
+        if(needLogin) vncHint += '<div class="meta" style="margin-bottom:6px;">登录窗口：请在下方窗口内完成扫码 / 输入验证码，完成后点账号卡上的「我已登录完成，验证」。</div>';
+        if(needTest) vncHint += '<div class="meta" style="margin-bottom:6px;">测试窗口：已打开该账号的浏览器（可手动提问 / 管理历史对话），结束后点账号卡上的「关闭测试」。</div>';
         shell += '<div class="acc" style="margin-bottom:14px;">'
-          + '<div class="meta" style="margin-bottom:8px;">登录窗口：请在下方窗口内完成扫码 / 输入验证码，完成后点账号卡上的「我已登录完成，验证」。</div>'
+          + vncHint
           + '<iframe id="novnc" src="'+esc(NOVNC_URL)+'" style="width:100%;height:520px;border:1px solid #e5e6eb;border-radius:8px;background:#000;"></iframe>'
           + '<div style="display:flex;gap:8px;margin-top:10px;align-items:center;">'
           + '<input id="vnc-text" class="inp" style="flex:1;" placeholder="手机号 / 验证码：填入后点「发送到窗口」">'
@@ -164,9 +170,19 @@ function render(){
 }
 // 测试窗口按钮：按后端真实状态回显「测试 / 关闭测试」，点击走 test / test-close 接口。
 // key = platformId/accountId；后端是权威来源（用户手动关窗也会同步）。
+// LAST_SESSIONS：会话集合变化（开窗/关窗）→ 重建面板，让 noVNC iframe 随测试窗口出现/消失。
+var LAST_SESSIONS = null;
 function syncTestButtons(){
   fetch(api('/api/login/test/sessions')).then(function(r){ return r.json(); }).then(function(d){
-    var set = {}; (d.sessions||[]).forEach(function(s){ set[s]=true; });
+    var arr = (d.sessions||[]).slice().sort();
+    var key2 = arr.join(',');
+    if(LAST_SESSIONS !== null && key2 !== LAST_SESSIONS){
+      LAST_SESSIONS = key2;
+      if(document.getElementById('acc-area')){ render(); }
+      return;
+    }
+    LAST_SESSIONS = key2;
+    var set = {}; arr.forEach(function(s){ set[s]=true; });
     Array.prototype.forEach.call(document.querySelectorAll('[data-testbtn]'), function(btn){
       var key = btn.getAttribute('data-testbtn');
       var open = !!set[key];
@@ -175,7 +191,7 @@ function syncTestButtons(){
         var parts = key.split('/'); var platform = parts[0]; var accountId = parts.slice(1).join('/');
         fetch(api('/api/login/'+platform+'/'+(open?'test-close':'test')), { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({accountId: accountId}) })
           .then(function(r){ return r.json().then(function(j){ return {ok:r.ok, j:j}; }); })
-          .then(function(o){ toast((o.j&&o.j.msg)||'已提交'); syncTestButtons(); })
+          .then(function(o){ toast((o.j&&o.j.msg)||'已提交'); syncTestButtons(); render(); })
           .catch(function(e){ toast('请求失败：'+e.message); });
       };
     });
