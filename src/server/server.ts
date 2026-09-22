@@ -757,6 +757,8 @@ router.delete('/api/proxies/:id', async (req, res) => {
 });
 
 // 账号绑定 / 解绑代理 IP：绑定或换绑（含解绑）后账号必须重新登录（旧登录态归属旧出口，换出口即失效）
+// 2026-09-22：宿主机直连也是池内一行（127.0.0.1:0, protocol=direct），账号绑它即走宿主机出口；
+// 解绑（proxyId=null）= 不绑任何 IP，不参与词级调度。
 router.post('/api/accounts/:platform/:accountId/proxy', async (req, res) => {
   const platform = String(req.params.platform).toLowerCase();
   const accountId = String(req.params.accountId);
@@ -967,6 +969,8 @@ export async function startServer(): Promise<void> {
   }
   if (config.basePath) app.use(config.basePath, router);
   else app.use(router);
+  // 确保宿主机直连行存在（seed，幂等）：host=127.0.0.1 port=0 protocol=direct，与代理 IP 一样参与调度
+  await proxyRepo().ensureDirectIp();
   const server = app.listen(PORT);
   // noVNC WebSocket 握手：noVNC 客户端用 path=... 参数发 WS 到 {basePath}/novnc/websockify。
   // express 不处理 upgrade，必须挂在原生 http server 上；转发时把路径重写为 websockify 的 /websockify。

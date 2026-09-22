@@ -20,8 +20,8 @@ export interface ProxyIp {
   nodeId: string;
   host: string;
   port: number;
-  /** http / socks5（添加时默认 http；host 带 socks5:// 前缀自动识别） */
-  protocol: 'http' | 'socks5';
+  /** http / socks5 / direct（direct=宿主机直连行，不参与代理，见 DIRECT_IP / isDirectIp） */
+  protocol: 'http' | 'socks5' | 'direct';
   username?: string;
   password?: string;
   enabled?: boolean;
@@ -40,6 +40,16 @@ export interface ProxyRepo {
   remove(id: number): Promise<void>;
   /** 绑定到该 IP 的账号数（删除前校验用） */
   countAccountsByProxy(id: number): Promise<number>;
+  /** 确保宿主机直连行存在（seed，幂等）：host=127.0.0.1 port=0 protocol=direct */
+  ensureDirectIp(): Promise<void>;
+}
+
+// 宿主机直连行：和普通代理 IP 一样参与调度（LRU/冷却/租约），唯一区别是 host=127.0.0.1 port=0，
+// 浏览器启动时识别到它就不传代理（走宿主机出口）。判定只认 host+port，不认 protocol。
+export const DIRECT_IP_HOST = '127.0.0.1';
+export const DIRECT_IP_PORT = 0;
+export function isDirectIp(p: Pick<ProxyIp, 'host' | 'port'>): boolean {
+  return p.host === DIRECT_IP_HOST && p.port === DIRECT_IP_PORT;
 }
 
 /** host 带 socks5:// 前缀 → 识别为 socks5；否则默认 http */
@@ -118,6 +128,23 @@ export class FileProxyRepo implements ProxyRepo {
     }
     return n;
   }
+
+  async ensureDirectIp(): Promise<void> {
+    const list = this.load();
+    if (list.some((p) => p.nodeId === config.nodeId && isDirectIp(p))) return;
+    const nextId = list.reduce((m, x) => Math.max(m, x.id), 0) + 1;
+    list.push({
+      id: nextId,
+      nodeId: config.nodeId,
+      host: DIRECT_IP_HOST,
+      port: DIRECT_IP_PORT,
+      protocol: 'direct',
+      enabled: true,
+      note: '宿主机直连（不参与代理，参与冷却轮换）',
+      usedCount: 0,
+    });
+    this.save(list);
+  }
 }
 
 // ─────────────────────────── MySQL 实现 ───────────────────────────
@@ -132,7 +159,7 @@ interface Row extends RowDataPacket {
   nodeId: string;
   host: string;
   port: number;
-  protocol: 'http' | 'socks5';
+  protocol: string;
   username?: string | null;
   password?: string | null;
   enabled: number;
@@ -146,7 +173,7 @@ const toProxy = (r: Row): ProxyIp => ({
   nodeId: r.nodeId,
   host: r.host,
   port: r.port,
-  protocol: r.protocol === 'socks5' ? 'socks5' : 'http',
+  protocol: r.protocol === 'socks5' ? 'socks5' : r.protocol === 'direct' ? 'direct' : 'http',
   username: r.username ?? undefined,
   password: r.password ?? undefined,
   enabled: r.enabled === 1,
@@ -238,6 +265,15 @@ export class MysqlProxyRepo implements ProxyRepo {
       [config.nodeId, id]
     );
     return Number(rows[0]?.n ?? 0);
+  }
+
+  async ensureDirectIp(): Promise<void> {
+    // INSERT IGNORE：uk_node_host_port 唯一键天然幂等（已存在（含已停用）不覆盖）
+    await dbPool().query(
+      `INSERT IGNORE INTO geo_ui_proxy_ip (node_id, host, port, protocol, username, password, enabled, note, used_count)
+       VALUES (?, ?, ?, 'direct', NULL, NULL, 1, '宿主机直连（不参与代理，参与冷却轮换）', 0)`,
+      [config.nodeId, DIRECT_IP_HOST, DIRECT_IP_PORT]
+    );
   }
 }
 

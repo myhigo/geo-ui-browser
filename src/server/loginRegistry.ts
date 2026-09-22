@@ -12,7 +12,7 @@ import { DoubaoAdapter } from '../platforms/doubao/DoubaoAdapter.js';
 import { resolvePlatform } from '../platforms/index.js';
 import { firstFound } from '../diagnostics/elementProbe.js';
 import { accountRepo, profileDirOf, Account, AccountStatus } from '../storage/accountRepo.js';
-import { proxyRepo } from '../storage/proxyRepo.js';
+import { proxyRepo, isDirectIp } from '../storage/proxyRepo.js';
 import { config, paths } from '../config/index.js';
 import { fingerprint } from '../config/fingerprint.js';
 import { egressKeyOf, egressAvailable, acquireEgress, releaseEgress } from '../runtime/egress.js';
@@ -345,12 +345,15 @@ function launchOpts(proxy?: { server: string; username?: string; password?: stri
   return o;
 }
 
-/** 账号的代理（从绑定的 geo_ui_proxy_ip 取协议/凭据；proxyId 为 null 或代理已停用 → 无代理走宿主机） */
+/** 账号的代理（从绑定的 geo_ui_proxy_ip 取协议/凭据；proxyId 为 null、代理已停用、
+ *  或绑定的是宿主机直连行（127.0.0.1:0）→ 无代理走宿主机出口） */
 export async function proxyOf(acc: Account): Promise<{ server: string; username?: string; password?: string } | undefined> {
   if (!acc.proxyId) return undefined;
   try {
     const ip = await proxyRepo().get(acc.proxyId);
     if (!ip || ip.enabled === false) return undefined;
+    // 宿主机直连行：不传代理（与普通代理 IP 一样参与调度/冷却，只是浏览器不设 proxy）
+    if (isDirectIp(ip)) return undefined;
     return {
       server: `${ip.protocol}://${ip.host}:${ip.port}`,
       ...(ip.username ? { username: ip.username } : {}),

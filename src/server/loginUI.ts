@@ -120,9 +120,11 @@ function renderAccounts(){
     // 账号 → 代理绑定下拉（2026-09-22 新增；换绑后账号需重新登录，由后端处理）
     var proxySelHtml = function(a){
       var cur = a.proxyId||0;
-      var opts = '<option value="0">不绑代理（宿主机）</option>'
+      var opts = '<option value="0">不绑代理（不参与调度）</option>'
         + PROXIES.filter(function(x){ return x.enabled!==false || cur===x.id; }).map(function(x){
-          return '<option value="'+x.id+'"'+(cur===x.id?' selected':'')+'>'+esc(x.host)+':'+x.port+'（'+x.protocol+'）</option>';
+          var isDirect = x.host==='127.0.0.1' && x.port===0;
+          var label = isDirect ? '宿主机（直连）' : esc(x.host)+':'+x.port+'（'+x.protocol+'）';
+          return '<option value="'+x.id+'"'+(cur===x.id?' selected':'')+'>'+label+'</option>';
         }).join('');
       return '<select class="proxy-sel" data-acc="'+esc(a.id)+'">'+opts+'</select>';
     };
@@ -268,11 +270,14 @@ function pxTick(){
   fetch(api('/api/proxies')).then(function(r){ return r.json(); }).then(function(d){
     var box = $('#px-list'); if(!box) return;
     var list = d.proxies||[];
-    if(!list.length){ box.innerHTML = '<div class="empty">还没有代理 IP。在上方添加后，再到「账号管理」给账号绑定代理并重新登录。</div>'; return; }
+    if(!list.length){ box.innerHTML = '<div class="empty">还没有代理 IP。在上方添加后，再到「账号管理」给账号绑定代理并重新登录。（宿主机直连行会随服务启动自动出现，账号绑它即走宿主机出口）</div>'; return; }
     box.innerHTML = list.map(function(p){
+      var isDirect = p.host==='127.0.0.1' && p.port===0;
+      var title = isDirect ? '宿主机（直连）' : esc(p.host)+':'+p.port;
+      var proto = p.protocol==='direct' ? '直连' : esc(p.protocol);
       return '<div class="acc"><div class="acc-top">'
-        + '<span class="st-label" style="font-family:ui-monospace,monospace;">'+esc(p.host)+':'+p.port+'</span>'
-        + '<span class="meta">'+esc(p.protocol)+'</span>'
+        + '<span class="st-label" style="font-family:ui-monospace,monospace;">'+title+'</span>'
+        + '<span class="meta">'+proto+'</span>'
         + (p.enabled===false?'<span class="meta" style="color:#f53f3f;">已停用</span>':'<span class="meta" style="color:#00b42a;">启用中</span>')
         + '</div>'
         + '<div class="meta">绑定账号：<b>'+p.accounts+'</b> ｜ 最近使用：<b>'+(p.lastUsedAt?new Date(p.lastUsedAt).toLocaleString():'从未使用')+'</b>'
