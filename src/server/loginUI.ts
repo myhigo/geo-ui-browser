@@ -164,10 +164,8 @@ function render(){
     TESTPOLL = setInterval(syncTestButtons, 4000);
   }).catch(function(){});
 }
-// 测试窗口按钮：按后端真实状态回显「测试 / 关闭测试」，点击走 test / test-close 接口。
-// key = platformId/accountId；后端是权威来源（用户手动关窗也会同步）。
-// 点击「测试」时同步 window.open 弹出 noVNC 独立窗口（同步调用避免被浏览器拦截弹窗），
-// 弹出后可在独立窗口内看浏览器画面，可放大 / 全屏；点「关闭测试」关掉后端窗口即可。
+// 点「测试」弹出的 noVNC 标签页引用（按 key 存，支持多账号同时开测试窗口）
+var WIN_REFS = {};
 function syncTestButtons(){
   fetch(api('/api/login/test/sessions')).then(function(r){ return r.json(); }).then(function(d){
     var set = {}; (d.sessions||[]).forEach(function(s){ set[s]=true; });
@@ -177,10 +175,21 @@ function syncTestButtons(){
       btn.textContent = open ? '关闭测试' : '测试';
       btn.onclick = function(){
         var parts = key.split('/'); var platform = parts[0]; var accountId = parts.slice(1).join('/');
-        if(!open){ window.open(NOVNC_URL, '_blank'); }
+        if(!open){
+          try { var w = window.open(NOVNC_URL, '_blank'); if(w) WIN_REFS[key] = w; } catch(e) { /* 弹窗被拦时后端窗口仍会开，用户可手动开 noVNC */ }
+        }
         fetch(api('/api/login/'+platform+'/'+(open?'test-close':'test')), { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({accountId: accountId}) })
           .then(function(r){ return r.json().then(function(j){ return {ok:r.ok, j:j}; }); })
-          .then(function(o){ toast((o.j&&o.j.msg)||'已提交'); syncTestButtons(); })
+          .then(function(o){
+            toast((o.j&&o.j.msg)||'已提交');
+            // 关闭测试成功 → 一并关掉之前弹出的 noVNC 标签页（同源脚本打开的窗口可被 close）
+            if(open){
+              var w = WIN_REFS[key];
+              if(w && !w.closed){ try { w.close(); } catch(e) { /* 已被用户手动关过等场景，忽略 */ } }
+              delete WIN_REFS[key];
+            }
+            syncTestButtons();
+          })
           .catch(function(e){ toast('请求失败：'+e.message); });
       };
     });
