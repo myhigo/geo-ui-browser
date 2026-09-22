@@ -12,6 +12,7 @@ import { DoubaoAdapter } from '../platforms/doubao/DoubaoAdapter.js';
 import { resolvePlatform } from '../platforms/index.js';
 import { firstFound } from '../diagnostics/elementProbe.js';
 import { accountRepo, profileDirOf, Account, AccountStatus } from '../storage/accountRepo.js';
+import { proxyRepo } from '../storage/proxyRepo.js';
 import { config, paths } from '../config/index.js';
 import { fingerprint } from '../config/fingerprint.js';
 import { egressKeyOf, egressAvailable, acquireEgress, releaseEgress } from '../runtime/egress.js';
@@ -329,7 +330,7 @@ export function loginBusy(): { platformId?: string; accountId?: string } {
   return activeLogin ? { platformId: activeLogin.platformId, accountId: activeLogin.accountId } : {};
 }
 
-function launchOpts(): Parameters<typeof chromium.launchPersistentContext>[1] {
+function launchOpts(proxy?: { server: string; username?: string; password?: string }): Parameters<typeof chromium.launchPersistentContext>[1] {
   const fp = fingerprint();
   const o: Parameters<typeof chromium.launchPersistentContext>[1] = {
     headless: false,
@@ -337,10 +338,27 @@ function launchOpts(): Parameters<typeof chromium.launchPersistentContext>[1] {
     ignoreDefaultArgs: ['--enable-automation'],
     viewport: fp.viewport,
     userAgent: fp.userAgent,
+    ...(proxy ? { proxy } : {}),
   };
   if (config.chromePath) o.executablePath = config.chromePath;
   else if (config.useSystemChrome) o.channel = 'chrome';
   return o;
+}
+
+/** 账号的代理（从绑定的 geo_ui_proxy_ip 取协议/凭据；proxyId 为 null 或代理已停用 → 无代理走宿主机） */
+export async function proxyOf(acc: Account): Promise<{ server: string; username?: string; password?: string } | undefined> {
+  if (!acc.proxyId) return undefined;
+  try {
+    const ip = await proxyRepo().get(acc.proxyId);
+    if (!ip || ip.enabled === false) return undefined;
+    return {
+      server: `${ip.protocol}://${ip.host}:${ip.port}`,
+      ...(ip.username ? { username: ip.username } : {}),
+      ...(ip.password ? { password: ip.password } : {}),
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 /** launchPersistentContext 容错包装：profile 残留 Chromium 锁（浏览器被 kill/容器重启后
@@ -402,14 +420,15 @@ export async function extractAccountMarker(page: Page, driver: PlatformLoginDriv
   return '';
 }
 
-/** 一次性打开目录探测：登录墙？昵称？ */
+/** 一次性打开目录探测：登录墙？昵称？proxy = 账号绑定代理（探测必须走同一出口，否则登录态判定失真） */
 async function openProbe(
   platformId: string,
-  dir: string
+  dir: string,
+  proxy?: { server: string; username?: string; password?: string }
 ): Promise<{ ok: boolean; loginRequired?: boolean; marker?: string; error?: string }> {
   let context: BrowserContext;
   try {
-    context = await launchPersistentRetry(dir, { ...launchOpts(), headless: true });
+    context = await launchPersistentRetry(dir, { ...launchOpts(proxy), headless: true });
   } catch (e) {
     return { ok: false, error: `打开会话失败：${(e as Error).message}` };
   }
@@ -500,8 +519,12 @@ async function openProbe(
 }
 
 /** 登录后校验：未撞墙且可提问 → ok；同时带回页面昵称（marker） */
-async function verifySession(platformId: string, dir: string): Promise<{ ok: boolean; note?: string; marker?: string }> {
-  const p = await openProbe(platformId, dir);
+async function verifySession(
+  platformId: string,
+  dir: string,
+  proxy?: { server: string; username?: string; password?: string }
+): Promise<{ ok: boolean; note?: string; marker?: string }> {
+  const p = await openProbe(platformId, dir, proxy);
   if (!p.ok) return { ok: false, note: p.error };
   if (p.loginRequired) return { ok: false, note: '登录态校验未通过：仍检测到登录墙/无输入框' };
   // ⚠️ 无登录墙平台（如文心：匿名也可用、首页有输入框）checkLogin 恒 false，上面拦不住"磁盘无登录态"。
@@ -549,7 +572,7 @@ export async function startLogin(
   const task = (async () => {
     let context: BrowserContext;
     try {
-      context = await launchPersistentRetry(acc.dir, launchOpts());
+      context = await launchPersistentRetry(acc.dir, launchOpts(await proxyOf(acc)));
     } catch (e) {
       await accountRepo().patch(platformId, acc.id, { status: 'failed', note: `打开登录窗口失败：${(e as Error).message}` });
       return;
@@ -582,7 +605,7 @@ export async function startLogin(
       // 不能只信窗口 DOM 昵称。曾踩坑（文心 2026-09-07）：可见窗口显示已登录、confirmLogin 抽到昵称
       // HiXiangHiGo → 直接标 active；但 BDUSS 从未落盘 .profiles/wenxiaoyan-1 → execute 打开该目录仍是未登录，
       // 整轮匿名问答（用户报"没用登录信息"）。故统一走 verifySession 验证磁盘，昵称仅以窗口抽的优先。
-      const v = await verifySession(platformId, acc.dir);
+      const v = await verifySession(platformId, acc.dir, await proxyOf(acc));
       const domMarker = pendingMarker !== null ? pendingMarker : null;
       pendingMarker = null;
       if (v.ok) {
@@ -757,7 +780,7 @@ export async function testAccount(
   }
   let context: BrowserContext;
   try {
-    context = await chromium.launchPersistentContext(acc.dir, launchOpts());
+    context = await chromium.launchPersistentContext(acc.dir, launchOpts(await proxyOf(acc)));
   } catch (e) {
     return { ok: false, msg: `打开测试窗口失败：${(e as Error).message}` };
   }

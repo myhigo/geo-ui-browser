@@ -83,6 +83,8 @@ export interface LaunchOpts {
   waitLoginMs?: number;
   /** 无头模式；缺省时由环境变量 GEO_HEADLESS 决定 */
   headless?: boolean;
+  /** 代理（真实走代理出口，防风控）：server 形如 http://host:port 或 socks5://host:port */
+  proxy?: { server: string; username?: string; password?: string };
 }
 
 export async function runDiagnostic(
@@ -101,6 +103,7 @@ export async function runDiagnostic(
     executablePath?: string;
     args?: string[];
     ignoreDefaultArgs?: string[];
+    proxy?: { server: string; username?: string; password?: string };
   } = {
     headless,
     slowMo: headless ? 0 : 20, // headless 模式下不刻意放慢；非 headless 用于人工可视监控
@@ -109,6 +112,7 @@ export async function runDiagnostic(
     args: ['--disable-blink-features=AutomationControlled'],
     // 去掉 Playwright 默认注入的 --enable-automation（会留下 cdc_ 钩子与 webdriver 标记）
     ignoreDefaultArgs: ['--enable-automation'],
+    ...(opts.proxy ? { proxy: opts.proxy } : {}),
   };
   const exePath = opts.executablePath ?? config.chromePath;
   const useSystem = opts.useSystemChrome ?? config.useSystemChrome;

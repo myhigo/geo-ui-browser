@@ -22,12 +22,31 @@ CREATE TABLE IF NOT EXISTS geo_ui_platform_account (
   leased_at         DATETIME     NULL,
   proxy_host        VARCHAR(64)  NULL COMMENT '绑定的代理 IP（代理启用后使用）',
   proxy_port        INT          NULL,
+  proxy_id          BIGINT       NULL COMMENT '绑定代理 IP 的 id（geo_ui_proxy_ip.id）；null=不绑代理（走宿主机）',
   proxy_bound_at    DATETIME     NULL COMMENT '代理绑定时间，用于续期判断',
   created_at        DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at        DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   UNIQUE KEY uk_node_platform_code (node_id, platform_id, account_code),
   KEY idx_pick (node_id, platform_id, status, enabled, leased_by, priority, last_used_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='平台账号台账';
+
+-- 代理 IP 管理（2026-09-22 新增：收录检测/采集统一走代理池，IP 冷却轮换 + 5 分钟占用租约）
+CREATE TABLE IF NOT EXISTS geo_ui_proxy_ip (
+  id            BIGINT AUTO_INCREMENT PRIMARY KEY,
+  node_id       VARCHAR(64)  NOT NULL DEFAULT 'default' COMMENT '持有该 IP 的节点（GEO_NODE_ID）',
+  host          VARCHAR(128) NOT NULL COMMENT '代理 IP/域名',
+  port          INT          NOT NULL COMMENT '代理端口',
+  protocol      VARCHAR(16)  NOT NULL DEFAULT 'http' COMMENT 'http/socks5（默认 http；host 带 socks5:// 前缀自动识别）',
+  username      VARCHAR(128) NULL COMMENT '代理账号（可选）',
+  password      VARCHAR(256) NULL COMMENT '代理密码（可选）',
+  enabled       TINYINT(1)   NOT NULL DEFAULT 1 COMMENT '0=停用（不参与分配）',
+  note          VARCHAR(256) NULL COMMENT '备注（机房/用途等）',
+  used_count    INT          NOT NULL DEFAULT 0 COMMENT '绑定账号数（冗余，删除前校验）',
+  last_used_at  DATETIME     NULL COMMENT '最近一次使用时间（IP 冷却 120s 依据）',
+  created_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_node_host_port (node_id, host, port)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='代理 IP 池';
 
 CREATE TABLE IF NOT EXISTS geo_ui_identity_state (
   id         BIGINT AUTO_INCREMENT PRIMARY KEY,

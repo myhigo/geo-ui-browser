@@ -14,6 +14,7 @@
 import fs from 'fs';
 import path from 'path';
 import { withConcurrencyLimit } from './concurrency.js';
+import { acquireIp } from '../runtime/ipScheduler.js';
 import { paths } from '../config/index.js';
 
 /** 主 JSON 文件的元素结构（严格三字段，契约不要随意加字段） */
@@ -75,9 +76,11 @@ export interface AnalysisProgress {
 }
 
 export interface AnalysisCollect {
-  (platform: string, keyword: string): Promise<{
-    sources: { title: string; url: string; siteName: string }[];
-  }>;
+  /** 采集回调：词级流程已挑好 IP（ipId），在该 IP 下挑账号执行；无可用账号返回 { skipped } */
+  (platform: string, keyword: string, ipId: number): Promise<
+    | { skipped: true; reason?: string }
+    | { sources: { title: string; url: string; siteName: string }[] }
+  >;
 }
 
 export const ANALYSIS_ROOT = paths.analysisRoot;
@@ -221,13 +224,19 @@ export async function runSourceAnalysis(
   }
 
   // 词内单平台的一次采集（含报错隔离 + 桶写入 + 进度信令）；串行/并行共用
-  async function runOne(ps: AnalysisPlatformStat, kw: string): Promise<void> {
+  // ipId = 该词已挑好的代理 IP（该 IP 下挑账号；无账号 → skipped，记日志不记失败）
+  async function runOne(ps: AnalysisPlatformStat, kw: string, ipId: number): Promise<void> {
     status.currentPlatform = ps.platform;
     if (status.perPlatform) status.perPlatform[ps.platform] = { running: true };
     const bucket = buckets.get(ps.platform)!;
     const detail = details.get(ps.platform)!;
     try {
-      const r = await collect(ps.platform, kw);
+      const r = await collect(ps.platform, kw, ipId);
+      if ('skipped' in r) {
+        log(`[${ps.modelId}] 「${kw}」跳过：${r.reason ?? '该 IP 下无可用账号'}`);
+        detail.keywords.push({ keyword: kw, ok: false, error: r.reason ?? '该IP下无账号', sources: [] });
+        return;
+      }
       const list = r.sources ?? [];
       const records: SourceRecord[] = [];
       let used = 0;
@@ -268,24 +277,34 @@ export async function runSourceAnalysis(
   for (let i = 0; i < keywords.length; i++) {
     const kw = keywords[i];
     status.currentKeyword = kw;
-    if (status.mode === 'parallel') {
-      // 词内多平台并行：同时开最多 PARALLEL_LIMIT 个浏览器，全部完成后进下一词
-      await withConcurrencyLimit(status.platforms, PARALLEL_LIMIT, (ps) => runOne(ps, kw));
-    } else {
-      // 串行：逐平台顺序执行
+    // —— 词级代理 IP 调度（2026-09-22 用户定稿流程）——
+    // 每个词先挑一个可用 IP（LRU + 120s 冷却，冷却中等待）；该 IP 下所有平台采集完 → 归还 IP（进入冷却）。
+    const alloc = await acquireIp();
+    if (!alloc) {
+      status.lastError = `「${kw}」无可用代理 IP（未配置 / 全部被占用），该词跳过`;
       for (const ps of status.platforms) {
-        await runOne(ps, kw);
+        ps.fail += 1;
+        details.get(ps.platform)!.keywords.push({ keyword: kw, ok: false, error: '无可用代理IP', sources: [] });
       }
+      status.doneKeywords = i + 1;
+      log(`✗ ${status.lastError}`);
+      continue;
+    }
+    try {
+      if (status.mode === 'parallel') {
+        // 词内多平台并行：同时开最多 PARALLEL_LIMIT 个浏览器，全部完成后进下一词
+        await withConcurrencyLimit(status.platforms, PARALLEL_LIMIT, (ps) => runOne(ps, kw, alloc.ip.id));
+      } else {
+        // 串行：逐平台顺序执行
+        for (const ps of status.platforms) {
+          await runOne(ps, kw, alloc.ip.id);
+        }
+      }
+    } finally {
+      alloc.release(); // 归还 IP（清占用 + 更新使用时间，进入 120s 冷却）
     }
     status.doneKeywords = i + 1;
-    // 词与词之间随机冷却 45-90s
-    if (i < keywords.length - 1) {
-      const wait = 45000 + Math.random() * 45000; // 45-90 秒
-      status.currentKeyword = '';
-      status.currentPlatform = '';
-      log(`⏳ 已完成 ${i + 1}/${keywords.length} 词，词间冷却 ${Math.round(wait / 1000)}s 后进入下一词…`);
-      await new Promise<void>((res) => setTimeout(res, wait));
-    }
+    // 词间冷却已去掉（2026-09-22 用户定稿）：节流由 IP 120s 冷却承担
   }
 
   // 落盘

@@ -36,6 +36,8 @@ export interface Account {
   priority?: number;
   proxyHost?: string;
   proxyPort?: number;
+  /** 绑定代理 IP 的 id（geo_ui_proxy_ip.id）；null/未填 = 不绑代理（走宿主机出口） */
+  proxyId?: number;
   /** 占用者（instanceId）；null/空 = 空闲。跨重启可据此回收脏占用 */
   leasedBy?: string | null;
 }
@@ -160,6 +162,7 @@ const FIELD_MAP: Record<string, string> = {
   priority: 'priority',
   proxyHost: 'proxy_host',
   proxyPort: 'proxy_port',
+  proxyId: 'proxy_id',
   leasedBy: 'leased_by',
 };
 
@@ -175,7 +178,7 @@ const SELECT_COLS = `account_code AS id, profile_dir AS dir, alias, marker, stat
   UNIX_TIMESTAMP(last_used_at) * 1000 AS lastUsedAt,
   today_queries AS todayQueries, query_date AS queryDate,
   consecutive_fails AS consecutiveFails,
-  proxy_host AS proxyHost, proxy_port AS proxyPort, leased_by AS leasedBy`;
+  proxy_host AS proxyHost, proxy_port AS proxyPort, proxy_id AS proxyId, leased_by AS leasedBy`;
 
 interface Row extends RowDataPacket {
   id: string;
@@ -193,6 +196,7 @@ interface Row extends RowDataPacket {
   consecutiveFails?: number | null;
   proxyHost?: string | null;
   proxyPort?: number | null;
+  proxyId?: number | null;
   leasedBy?: string | null;
 }
 
@@ -212,6 +216,7 @@ const toAccount = (r: Row): Account => ({
   priority: r.priority ?? 0,
   proxyHost: r.proxyHost ?? undefined,
   proxyPort: r.proxyPort ?? undefined,
+  proxyId: r.proxyId == null ? undefined : Number(r.proxyId),
   leasedBy: r.leasedBy ?? null,
 });
 

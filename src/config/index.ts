@@ -88,6 +88,10 @@ export interface AppConfig {
   maxBrowsers: number;
   /** 同一出口 IP 上同时跑的任务上限（1=同一 IP 串行，最安全；调大提速但风控风险上升） */
   maxPerEgress: number;
+  /** 代理 IP 冷却间隔（秒）：同一 IP 用完后需等待该时长才能再次被分配（默认 120） */
+  ipIntervalSec: number;
+  /** 占用租约（毫秒）：IP/账号被占用超过该时长未释放（崩溃残留）即视为空闲，下次可直接使用（默认 5 分钟） */
+  ipLeaseMs: number;
   /** 有状态数据的根目录；默认当前工作目录（保持与重构前一致） */
   dataRoot: string;
   /** 显式指定 Chrome 可执行文件路径（不指定则用 Playwright 自带 chromium） */
@@ -155,6 +159,8 @@ export const config: AppConfig = {
   headless: bool('GEO_HEADLESS', true),
   maxBrowsers: num('GEO_MAX_BROWSERS', 4),
   maxPerEgress: num('GEO_MAX_PER_EGRESS', 1),
+  ipIntervalSec: num('GEO_IP_INTERVAL', 120),
+  ipLeaseMs: 5 * 60 * 1000,
   dataRoot: env('GEO_DATA_ROOT') ?? '.',
   chromePath: env('GEO_CHROME_PATH'),
   useSystemChrome: bool('GEO_USE_SYSTEM_CHROME', false),
@@ -185,6 +191,10 @@ export const paths = {
   get siteNamesFile(): string {
     return path.resolve(config.dataRoot, 'site-names.json');
   },
+  /** 代理 IP 池（file 模式） */
+  get proxiesFile(): string {
+    return path.resolve(config.dataRoot, 'proxies.json');
+  },
 };
 
 /** 启动日志：只打印非默认的关键项，避免刷屏 */
@@ -200,5 +210,6 @@ export function describeConfig(): string {
     `dataRoot=${path.resolve(config.dataRoot)}`,
   ];
   if (config.pullHost) bits.push(`pullHost=${config.pullHost}`);
+  if (config.ipIntervalSec !== 120) bits.push(`ipInterval=${config.ipIntervalSec}s`);
   return bits.join(' ');
 }

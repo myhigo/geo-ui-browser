@@ -23,6 +23,8 @@ GEO_ARTIFACT_MODE=debug
 GEO_HEADLESS=true
 GEO_MAX_BROWSERS=4
 GEO_MAX_PER_EGRESS=1
+# 代理 IP 冷却间隔（秒）：同一代理 IP 用完需等这么久才能再被分配（默认 120）
+GEO_IP_INTERVAL=120
 GEO_NODE_ID=default
 USE_CN_MIRROR=true
 

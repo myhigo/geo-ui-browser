@@ -40,6 +40,11 @@ export function adminPageHtml(): string {
   button.primary:hover { background: #0e42d2; }
   button.danger:hover { border-color: #f53f3f; color: #f53f3f; }
   button:disabled { opacity: .5; cursor: not-allowed; }
+  .plat-tab { background: #fff; border: 1px solid #c9cdd4; color: #4e5969; border-radius: 6px; padding: 6px 16px; font-size: 13px; cursor: pointer; }
+  .plat-tab:hover { border-color: #165dff; color: #165dff; }
+  .plat-tab.on { background: #e8f3ff; border-color: #165dff; color: #165dff; font-weight: 500; }
+  select.proxy-sel { padding: 5px 8px; border: 1px solid #c9cdd4; border-radius: 6px; font-size: 12px; color: #1f2329; background: #fff; max-width: 260px; }
+  select.proxy-sel:focus { outline: none; border-color: #165dff; }
   a.btn { display: inline-block; background: #fff; border: 1px solid #c9cdd4; color: #4e5969; border-radius: 6px; padding: 6px 14px; font-size: 13px; text-decoration: none; }
   a.btn:hover { border-color: #165dff; color: #165dff; }
   a.btn.primary { background: #165dff; border-color: #165dff; color: #fff; }
@@ -64,6 +69,10 @@ export function adminPageHtml(): string {
 <div id="toast" class="toast"></div>
 <script>
 var CUR = null, POLL = null, SA_LAST = '', TESTPOLL = null;
+// 账号管理页当前选中的平台（2026-09-22 菜单改版：平台从侧边菜单移到账号管理页顶部 tab）
+var ACC_PLATFORM = null;
+// 代理冷却间隔（秒），展示用（服务端 GEO_IP_INTERVAL）
+var IP_INTERVAL = ${JSON.stringify(config.ipIntervalSec)};
 // 收录检测勾「开启浏览器」时弹出的 noVNC 标签页引用 + 任务结束标记（结束后自动关标签页）
 var PULL_WIN = null, PULL_ENDED = false;
 // 已构建面板的结构标识："<平台>|<有无登录窗口>"。用于避免轮询时整块重建
@@ -75,21 +84,48 @@ var ST = { none:{t:'未登录',c:'#c9cdd4'}, waiting:{t:'登录中',c:'#ff7d00'}
 function $(s){ return document.querySelector(s); }
 function toast(m){ var t=$('#toast'); t.textContent=m; t.classList.add('show'); setTimeout(function(){ t.classList.remove('show'); }, 2400); }
 function esc(x){ return String(x==null?'':x).replace(/[&<>"]/g, function(ch){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch]; }); }
+// 2026-09-22 菜单四项定稿：代理管理 / 账号管理 / 信源分析 / 收录检测（平台移到账号管理页顶部 tab）
 function menu(platforms){
-  $('#menu').innerHTML = platforms.map(function(p){ return '<button class="menu-item'+(CUR===p.platformId?' on':'')+'" data-id="'+p.platformId+'">'+p.label+'</button>'; }).join('')
-    + '<button class="menu-item'+(CUR==='__sources'?' on':'')+'" data-id="__sources">信源分析</button>'
-    + '<button class="menu-item'+(CUR==='__pull'?' on':'')+'" data-id="__pull">收录检测</button>';
+  var items = [
+    {id:'__proxies', label:'代理管理'},
+    {id:'__accounts', label:'账号管理'},
+    {id:'__sources', label:'信源分析'},
+    {id:'__pull', label:'收录检测'}
+  ];
+  $('#menu').innerHTML = items.map(function(it){ return '<button class="menu-item'+(CUR===it.id?' on':'')+'" data-id="'+it.id+'">'+it.label+'</button>'; }).join('');
   Array.prototype.forEach.call(document.querySelectorAll('.menu-item'), function(b){ b.onclick=function(){ CUR=b.dataset.id; menu(platforms); render(); }; });
 }
 function render(){
   if(TESTPOLL){ clearInterval(TESTPOLL); TESTPOLL=null; }
+  if(CUR==='__proxies'){ renderProxies(); return; }
   if(CUR==='__pull'){ renderPull(); return; }
   if(CUR==='__sources'){ renderSources(); return; }
+  if(CUR==='__accounts'){ renderAccounts(); return; }
   if(!CUR) return;
-    fetch(api('/api/login/platforms')).then(function(r){ return r.json(); }).then(function(d){
-    var p = (d.platforms||[]).filter(function(x){ return x.platformId===CUR; })[0];
+}
+// 账号管理页（2026-09-22 改版：平台在页面顶部 tab，点击切换；菜单只保留四大项）
+function renderAccounts(){
+  if(TESTPOLL){ clearInterval(TESTPOLL); TESTPOLL=null; }
+  Promise.all([
+    fetch(api('/api/login/platforms')).then(function(r){ return r.json(); }),
+    fetch(api('/api/proxies')).then(function(r){ return r.json(); }).catch(function(){ return {proxies:[]}; })
+  ]).then(function(arr){
+    var d = arr[0]; var PROXIES = (arr[1]&&arr[1].proxies)||[];
+    var plats = d.platforms||[];
+    if(!ACC_PLATFORM || !plats.some(function(x){ return x.platformId===ACC_PLATFORM; })) ACC_PLATFORM = plats.length ? plats[0].platformId : null;
+    if(!ACC_PLATFORM){ $('#panel').innerHTML='<h2>账号管理</h2><div class="empty">暂无平台。</div>'; return; }
+    var p = plats.filter(function(x){ return x.platformId===ACC_PLATFORM; })[0];
     if(!p) return;
-    menu(d.platforms||[]);
+    menu(plats);
+    // 账号 → 代理绑定下拉（2026-09-22 新增；换绑后账号需重新登录，由后端处理）
+    var proxySelHtml = function(a){
+      var cur = a.proxyId||0;
+      var opts = '<option value="0">不绑代理（宿主机）</option>'
+        + PROXIES.filter(function(x){ return x.enabled!==false || cur===x.id; }).map(function(x){
+          return '<option value="'+x.id+'"'+(cur===x.id?' selected':'')+'>'+esc(x.host)+':'+x.port+'（'+x.protocol+'）</option>';
+        }).join('');
+      return '<select class="proxy-sel" data-acc="'+esc(a.id)+'">'+opts+'</select>';
+    };
     // 是否需要内嵌 noVNC iframe：仅登录窗口（waiting）嵌在页面里；
     // 测试窗口改为弹出独立窗口（见 syncTestButtons），不嵌 iframe。
     var needLogin = p.accounts.some(function(a){ return a.status==='waiting'; });
@@ -106,6 +142,7 @@ function render(){
       var off = a.enabled===false;
       accHtml += '<div class="acc"'+(off?' style="opacity:.55"':'')+'><div class="acc-top"><span class="dot" style="background:'+st.c+'"></span><span class="st-label">'+st.t+(a.busy?'（使用中）':'')+'</span>'+(a.alias?'<span class="acc-alias">'+esc(a.alias)+'</span>':'')+(off?'<span class="meta">已停用</span>':'')+((a.priority||0)>0?'<span class="meta">置顶</span>':'')+'</div>';
       accHtml += '<div class="meta">昵称：<b>'+esc(a.marker||'--')+'</b> ｜ 今日查询次数：<b>'+((a.todayQueries==null?0:a.todayQueries))+'</b></div>';
+      accHtml += '<div class="meta">代理 IP：'+proxySelHtml(a)+'</div>';
       if(a.note) accHtml += '<div class="note">'+esc(a.note)+'</div>';
       accHtml += '<div class="meta">'+(a.lastUsedAt?'最近使用：<b>'+new Date(a.lastUsedAt).toLocaleString()+'</b>':'最近使用：<b>-</b>')+(a.consecutiveFails?' ｜ 连续失败：<b>'+a.consecutiveFails+'</b>':'')+'</div>';
       accHtml += '<div class="btns">';
@@ -138,9 +175,10 @@ function render(){
     //   2) 输入框被重建 → 刚填的手机号/验证码被清空、焦点丢失（表现为"输入不进去"）
     // 因此只在结构变化（切平台 / 登录窗口出现或消失 / 面板被其他视图占用过）时重建外壳，
     // 轮询时只刷新 #acc-area 里的账号卡片。
-    var key = CUR + '|' + (needVnc ? 'vnc' : 'novnc');
+    var key = 'acc|' + ACC_PLATFORM + '|' + (needVnc ? 'vnc' : 'novnc');
     if(PANEL_KEY !== key || !document.getElementById('acc-area')){
-      var shell = '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;"><h2>'+p.label+' · 账号管理</h2><button class="primary" data-kind="start">＋ 添加账号登录</button></div>';
+      var shell = '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;"><h2>账号管理</h2><button class="primary" data-kind="start">＋ 添加账号登录</button></div>'
+        + '<div style="margin:10px 0;display:flex;gap:8px;flex-wrap:wrap;">' + plats.map(function(x){ return '<button class="plat-tab'+(x.platformId===ACC_PLATFORM?' on':'')+'" data-plat="'+x.platformId+'">'+x.label+'</button>'; }).join('') + '</div>';
       if(p.hint) shell += '<div class="hint">'+esc(p.hint)+'</div>';
       if(needVnc){
         shell += '<div class="acc" style="margin-bottom:14px;">'
@@ -160,7 +198,7 @@ function render(){
     if(acc) acc.innerHTML = accHtml;
 
     if(POLL) clearInterval(POLL); POLL=null;
-    if(needVnc) POLL=setInterval(render,3000);
+    if(needVnc) POLL=setInterval(renderAccounts,3000);
     syncTestButtons();
     if(TESTPOLL) clearInterval(TESTPOLL);
     TESTPOLL = setInterval(syncTestButtons, 4000);
@@ -196,6 +234,54 @@ function syncTestButtons(){
       };
     });
   }).catch(function(){});
+}
+// ---- 代理管理页（2026-09-22 新增）：IP 池增删/启停，绑定数展示，删除前需先解绑 ----
+function renderProxies(){
+  if(POLL) clearInterval(POLL); POLL=null;
+  $('#panel').innerHTML =
+      '<h2>代理管理</h2>'
+    + '<div class="acc"><div class="meta">新增代理（格式：IP:端口，例如 1.2.3.4:8080；socks5 填 socks5://1.2.3.4:1080，协议自动识别，无需额外配置）</div>'
+    + '<div style="display:flex;gap:8px;flex-wrap:wrap;margin:10px 0;">'
+    + '<input id="px-host" class="inp" style="width:220px;" placeholder="IP:端口 或 socks5://IP:端口">'
+    + '<input id="px-user" class="inp" style="width:140px;" placeholder="账号（可选）">'
+    + '<input id="px-pass" class="inp" style="width:140px;" type="password" placeholder="密码（可选）">'
+    + '<input id="px-note" class="inp" style="width:160px;" placeholder="备注（可选）">'
+    + '<button class="primary" id="px-add">添加</button></div>'
+    + '<div class="meta">IP 使用后冷却 <b>'+IP_INTERVAL+'</b> 秒自动轮换（LRU：最早用的先复用）；不提供连通性测试；已绑定账号的 IP 需先解绑账号才能删除。</div></div>'
+    + '<div id="px-list" style="margin-top:14px;">加载中…</div>';
+  $('#px-add').onclick = function(){
+    var host = $('#px-host').value.trim();
+    if(!host){ toast('请填 IP:端口'); return; }
+    var payload = { host: host };
+    var u = $('#px-user').value.trim(); if(u) payload.username = u;
+    var p = $('#px-pass').value; if(p) payload.password = p;
+    var n = $('#px-note').value.trim(); if(n) payload.note = n;
+    fetch(api('/api/proxies'), { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(payload) })
+      .then(function(r){ return r.json().catch(function(){ return {msg:'响应解析失败'}; }); })
+      .then(function(j){ toast((j&&j.msg)||'已添加'); $('#px-host').value=''; $('#px-user').value=''; $('#px-pass').value=''; $('#px-note').value=''; pxTick(); })
+      .catch(function(e){ toast('请求失败：'+e.message); });
+  };
+  pxTick();
+  POLL = setInterval(pxTick, 5000);
+}
+function pxTick(){
+  fetch(api('/api/proxies')).then(function(r){ return r.json(); }).then(function(d){
+    var box = $('#px-list'); if(!box) return;
+    var list = d.proxies||[];
+    if(!list.length){ box.innerHTML = '<div class="empty">还没有代理 IP。在上方添加后，再到「账号管理」给账号绑定代理并重新登录。</div>'; return; }
+    box.innerHTML = list.map(function(p){
+      return '<div class="acc"><div class="acc-top">'
+        + '<span class="st-label" style="font-family:ui-monospace,monospace;">'+esc(p.host)+':'+p.port+'</span>'
+        + '<span class="meta">'+esc(p.protocol)+'</span>'
+        + (p.enabled===false?'<span class="meta" style="color:#f53f3f;">已停用</span>':'<span class="meta" style="color:#00b42a;">启用中</span>')
+        + '</div>'
+        + '<div class="meta">绑定账号：<b>'+p.accounts+'</b> ｜ 最近使用：<b>'+(p.lastUsedAt?new Date(p.lastUsedAt).toLocaleString():'从未使用')+'</b>'
+        + (p.username?' ｜ 账号：<b>'+esc(p.username)+'</b>':'')
+        + (p.note?' ｜ 备注：<b>'+esc(p.note)+'</b>':'') + '</div>'
+        + '<div class="btns"><button data-px="'+p.id+'" data-pxact="toggle" data-en="'+(p.enabled?'1':'0')+'">'+(p.enabled?'停用':'启用')+'</button>'
+        + '<button class="danger" data-px="'+p.id+'" data-pxact="del">删除</button></div></div>';
+    }).join('');
+  }).catch(function(){ var b=$('#px-list'); if(b) b.innerHTML='<span class="empty">代理列表加载失败</span>'; });
 }
 // ---- 信源分析页：逐行输入关键词 → 全平台顺序采集 → 每个平台一个 JSON 文件（按引用次数降序） ----
 function renderSources(){
@@ -361,9 +447,10 @@ function pullStatusTick(){
 // 事件委托：账号卡与顶部按钮统一走 data-kind / data-acc（避免内联 onclick 引号转义问题）
 function post(kind, accountId, extra){
   if(kind!=='start' && !accountId){ toast('缺少账号'); return; }
+  var plat = (CUR==='__accounts') ? ACC_PLATFORM : CUR;
   var url = (kind==='toggle'||kind==='priority')
-    ? api('/api/accounts/'+CUR+'/'+accountId+'/'+kind)
-    : api('/api/login/'+CUR+'/'+kind);
+    ? api('/api/accounts/'+plat+'/'+accountId+'/'+kind)
+    : api('/api/login/'+plat+'/'+kind);
   var body = { accountId: accountId||undefined };
   if(extra) for(var k in extra) body[k] = extra[k];
   fetch(url, { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(body) })
@@ -387,6 +474,22 @@ function sendToVnc(){
 }
 document.addEventListener('click', function(ev){
   if(ev.target && ev.target.closest && ev.target.closest('#vnc-send')){ sendToVnc(); return; }
+  // 账号管理页顶部平台 tab（2026-09-22）
+  var pt = ev.target && ev.target.closest ? ev.target.closest('button.plat-tab') : null;
+  if(pt){ ACC_PLATFORM = pt.getAttribute('data-plat'); render(); return; }
+  // 代理管理行按钮（启停/删除，2026-09-22）
+  var px = ev.target && ev.target.closest ? ev.target.closest('button[data-px]') : null;
+  if(px){
+    var pid = Number(px.getAttribute('data-px'));
+    var act = px.getAttribute('data-pxact');
+    if(act==='del' && !confirm('确认删除该代理 IP？已绑定账号时会拒绝删除，需先到账号管理解绑。')) return;
+    var opt = act==='del' ? { method:'DELETE' } : { method:'PATCH', headers:{'content-type':'application/json'}, body: JSON.stringify({ enabled: px.getAttribute('data-en')!=='1' }) };
+    fetch(api('/api/proxies/'+pid), opt)
+      .then(function(r){ return r.json().catch(function(){ return {msg:'响应解析失败'}; }); })
+      .then(function(j){ toast((j&&j.msg)||'已操作'); pxTick(); })
+      .catch(function(e){ toast('请求失败：'+e.message); });
+    return;
+  }
   var b = ev.target && ev.target.closest ? ev.target.closest('button[data-kind]') : null;
   if(!b || !CUR) return;
   if(b.hasAttribute('disabled')) return; // 已登录态：登录按钮置灰，禁止触发
@@ -395,7 +498,7 @@ document.addEventListener('click', function(ev){
   if(kind==='alias'){
     var alias = prompt('账号备注（用于区分账号，如：主号-尾号1234）');
     if(alias===null || !alias.trim()) return;
-    fetch(api('/api/login/'+CUR+'/alias'), { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({accountId:acc, alias:alias.trim()}) })
+    fetch(api('/api/login/'+((CUR==='__accounts')?ACC_PLATFORM:CUR)+'/alias'), { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({accountId:acc, alias:alias.trim()}) })
       .then(function(r){ return r.json(); }).then(function(j){ toast((j&&j.msg)||'已更新'); render(); })
       .catch(function(e){ toast('请求失败：'+e.message); });
     return;
@@ -409,9 +512,23 @@ document.addEventListener('click', function(ev){
   }
   post(kind, acc);
 });
+// 账号绑定代理下拉（change 事件；2026-09-22）
+document.addEventListener('change', function(ev){
+  var sel = ev.target && ev.target.closest ? ev.target.closest('select.proxy-sel') : null;
+  if(!sel) return;
+  var accountId = sel.getAttribute('data-acc');
+  var v = sel.value;
+  var plat = (CUR==='__accounts') ? ACC_PLATFORM : CUR;
+  if(!plat || !accountId){ return; }
+  fetch(api('/api/accounts/'+plat+'/'+accountId+'/proxy'), { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ proxyId: v==='0' ? null : Number(v) }) })
+    .then(function(r){ return r.json().catch(function(){ return {msg:'响应解析失败'}; }); })
+    .then(function(j){ toast((j&&j.msg)||'已提交'); render(); })
+    .catch(function(e){ toast('请求失败：'+e.message); });
+});
 fetch(api('/api/login/platforms')).then(function(r){ return r.json(); }).then(function(d){
   var ps = d.platforms||[];
-  CUR = ps.length ? ps[0].platformId : '__pull';
+  // 2026-09-22 菜单改版：默认落在「账号管理」页
+  CUR = ps.length ? '__accounts' : '__pull';
   menu(ps); render();
 }).catch(function(){ $('#panel').innerHTML='<div class="empty">加载失败，请刷新重试。</div>'; });
 </script>

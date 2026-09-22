@@ -1,11 +1,19 @@
 // 拉模式（pull）：手动触发 → 分页拉关键词 → 逐个采集（平台轮询分配）→ 结果回推。
 // 2026-09-03 用户定稿：不记执行进度、无调度器、无状态机；拉不到数据本轮即结束。
 // 浏览器身份沿用 server.ts 的 execute()（千问撞墙重生 / 文心轮换 / profile 落盘）。
+//
+// 2026-09-22 代理 IP 调度（用户定稿流程）：
+//   每个词 → 先挑 IP（启用 + 未占用 + 冷却已过，LRU 升序；冷却中休眠等待）
+//        → 该 IP 下所有目标平台【并行】采集（同 IP 多浏览器，不再串行）
+//        → 全部完成 → 更新该 IP 使用时间（开始 120s 冷却）→ 下一个词重新挑 IP。
+//   词间冷却已去掉：节流由 IP 冷却承担（IP 足够多可不同断处理）。
 
 import { withConcurrencyLimit } from './concurrency.js';
+import { acquireIp } from '../runtime/ipScheduler.js';
 
-/** 收录检测：同一关键词的多个平台并发采集时，同时打开浏览器的上限（防多浏览器同开 OOM） */
-const PULL_PARALLEL_LIMIT = 4;
+/** 收录检测：同一关键词的多个平台并发采集时，同时打开浏览器的上限。
+ *  2026-09-22 用户定稿：同 IP 下各平台【同时】提问（5 个平台 5 个浏览器），不再串行 */
+const PULL_PARALLEL_LIMIT = 5;
 
 export interface PullConfig {
   /** 对方服务根地址，如 http://127.0.0.1:8080（服务启动时经 GEO_PULL_HOST 注入） */
@@ -18,13 +26,14 @@ export interface PullConfig {
   endTime?: string;
 }
 
-/** 单个词的采集回调（复用 server.ts 的 execute：身份/超时/解析/截图） */
+/** 单个词的采集结果：skipped = 该词所用 IP 下该平台没有可用账号（跳过，不回推） */
+export type CollectResult =
+  | { skipped: true; reason?: string }
+  | { screenshot: string; answer: string; sources: { title: string; url: string; siteName: string }[] };
+
+/** 单个词的采集回调（复用 server.ts 的 execute：身份/超时/解析/截图；ipId = 该词已挑好的代理 IP） */
 export interface PullCollect {
-  (platform: string, keyword: string): Promise<{
-    screenshot: string;
-    answer: string;
-    sources: { title: string; url: string; siteName: string }[];
-  }>;
+  (platform: string, keyword: string, ipId: number): Promise<CollectResult>;
 }
 
 export interface PullSummary {
@@ -171,43 +180,57 @@ export async function runPullRound(
         continue;
       }
       log(`#${rec.id} ${rec.keyword} 已收录：${collected.join('/') || '无'}；本次检查：${checkTargets.join('/')}`);
-      // 同一关键词的多个平台并发采集（最多 PULL_PARALLEL_LIMIT 个浏览器同时跑），全部完成后才算该词结束
-      await withConcurrencyLimit(checkTargets, PULL_PARALLEL_LIMIT, async (platform) => {
-        const modelId = platform; // platform 已是下层 modeId，回推直接使用
-        const base = { keywordId: rec.id, modelId };
-        try {
-          const r = await collect(platform, rec.keyword);
-          const item = {
-            ...base,
-            success: true,
-            answer: r.answer,
-            sourcesText: sourcesTextOf(r.sources),
-            references: r.sources,
-            screenshot: r.screenshot || null, // 截图失败/未产出时留空（用户 2026-09-03 定）
-            msg: null,
-          };
-          await reportItems(cfg, [item], onLine);
-          summary.success += 1;
-          log(`#${rec.id} ${modelId} 成功（answer ${r.answer.length} 字 / sources ${r.sources.length}）`);
-        } catch (e) {
-          const errMsg = (e as Error).message || '采集失败';
-          summary.failed += 1;
-          try {
-            await reportItems(cfg, [{ ...base, success: false, answer: null, sourcesText: null, references: [], screenshot: null, msg: errMsg }], onLine);
-            log(`#${rec.id} ${modelId} 失败已回推：${errMsg}`);
-          } catch (pe) {
-            summary.reportFailed += 1;
-            summary.lastError = `#${rec.id} ${modelId} 回推失败：${(pe as Error).message}`;
-            log(`✗ ${summary.lastError}`);
-          }
-        }
-      });
-      // 词间冷却 45-80s（非本页末词才等，避免采完空等；跨页间隔由 fetchPage 承担）
-      if (recIdx < records.length) {
-        const wait = 45000 + Math.random() * 35000; // 45-80 秒
-        log(`⏳ 已完成 ${recIdx}/${records.length} 词，词间冷却 ${(wait / 1000).toFixed(0)}s 后继续…`);
-        await sleep(wait);
+      // —— 词级代理 IP 调度（2026-09-22 用户定稿流程）——
+      // 每个词先挑一个可用 IP（LRU 升序 + 120s 冷却，冷却中休眠等待）；拿到 IP 后，
+      // 该 IP 下所有目标平台【并行】采集（同 IP 多浏览器），全部完成 → 更新 IP 使用时间（进入冷却）。
+      const alloc = await acquireIp();
+      if (!alloc) {
+        summary.failed += checkTargets.length;
+        summary.lastError = `没有可用代理 IP（未配置 / 全部被占用），词 #${rec.id} 跳过`;
+        log(`✗ #${rec.id} ${rec.keyword} 无可用代理 IP，该词跳过（请先在「代理管理」添加并启用代理）`);
+        continue;
       }
+      try {
+        // 同一关键词的多个平台并发采集（最多 PULL_PARALLEL_LIMIT 个浏览器同时跑），全部完成后才算该词结束
+        await withConcurrencyLimit(checkTargets, PULL_PARALLEL_LIMIT, async (platform) => {
+          const modelId = platform; // platform 已是下层 modeId，回推直接使用
+          const base = { keywordId: rec.id, modelId };
+          try {
+            const r = await collect(platform, rec.keyword, alloc.ip.id);
+            if ('skipped' in r) {
+              log(`#${rec.id} ${modelId} 跳过：${r.reason ?? '该 IP 下无可用账号'}`);
+              return;
+            }
+            const item = {
+              ...base,
+              success: true,
+              answer: r.answer,
+              sourcesText: sourcesTextOf(r.sources),
+              references: r.sources,
+              screenshot: r.screenshot || null, // 截图失败/未产出时留空（用户 2026-09-03 定）
+              msg: null,
+            };
+            await reportItems(cfg, [item], onLine);
+            summary.success += 1;
+            log(`#${rec.id} ${modelId} 成功（answer ${r.answer.length} 字 / sources ${r.sources.length}）`);
+          } catch (e) {
+            const errMsg = (e as Error).message || '采集失败';
+            summary.failed += 1;
+            try {
+              await reportItems(cfg, [{ ...base, success: false, answer: null, sourcesText: null, references: [], screenshot: null, msg: errMsg }], onLine);
+              log(`#${rec.id} ${modelId} 失败已回推：${errMsg}`);
+            } catch (pe) {
+              summary.reportFailed += 1;
+              summary.lastError = `#${rec.id} ${modelId} 回推失败：${(pe as Error).message}`;
+              log(`✗ ${summary.lastError}`);
+            }
+          }
+        });
+      } finally {
+        // 该词所有平台处理完 → 归还 IP（清占用 + 更新 last_used_at，进入 120s 冷却）
+        alloc.release();
+      }
+      // 词间冷却已去掉（2026-09-22 用户定稿）：节流由 IP 120s 冷却承担
     }
   }
   log(`本轮结束：${summary.fetched} 词 / 采集结果 成功 ${summary.success} 失败 ${summary.failed} / 回推失败 ${summary.reportFailed}`);

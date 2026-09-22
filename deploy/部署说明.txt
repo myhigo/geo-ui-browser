@@ -30,3 +30,20 @@ geo-ui-browser 部署包说明
 - 停止服务：
    Windows 双击「停止服务.bat」；
    Linux 运行  bash stop.sh
+
+【代理 IP（防风控）】
+- 新增功能：采集/收录检测统一走代理 IP 池（避免所有请求挤在宿主机 IP 上触发风控）。
+- 使用前需在数据库执行一次建表 SQL（新表 + 账号表加列），
+  在 MySQL 客户端连上数据库后执行 sql/schema.sql 里新增的部分：
+    CREATE TABLE IF NOT EXISTS geo_ui_proxy_ip (...);   -- 见 sql/schema.sql 完整语句
+    ALTER TABLE geo_ui_platform_account ADD COLUMN proxy_id BIGINT NULL ...;
+  （仓库 sql/schema.sql 里都有现成语句，复制执行即可）
+- 使用流程：
+  1. 管理台 →「代理管理」→ 添加代理（填 IP:端口，如 1.2.3.4:8080；
+     socks5 填 socks5://1.2.3.4:1080，协议自动识别，无需配协议项）
+  2. 管理台 →「账号管理」→ 给账号选一个代理 IP（换绑后该账号会自动标记为需重新登录）
+  3. 对绑了代理的账号重新登录一次
+  4. 跑收录检测 / 信源分析：每个词自动挑一个 IP（最近未用、冷却已过），
+     该 IP 下所有平台并行提问；用完后该 IP 冷却 GEO_IP_INTERVAL 秒（默认 120）再轮换。
+- 说明：IP 使用后自动冷却轮换（LRU：最早用的先复用）；占用超过 5 分钟未释放（崩溃残留）自动回收；
+  已绑定账号的 IP 需先解绑账号才能删除。

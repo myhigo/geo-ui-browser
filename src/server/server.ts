@@ -27,6 +27,7 @@ import {
   listViews,
   loginBusy,
   logoutAccount,
+  proxyOf,
   releaseAccount,
   startLogin,
   testAccount,
@@ -34,9 +35,11 @@ import {
   listTestSessions,
   updateAlias,
 } from './loginRegistry.js';
+import { acquireIp, acquireAccountByIp, releaseAccountBusy, IpAllocation } from '../runtime/ipScheduler.js';
 import { adminPageHtml } from './loginUI.js';
 import { config, paths, describeConfig } from '../config/index.js';
-import { accountRepo } from '../storage/accountRepo.js';
+import { accountRepo, Account } from '../storage/accountRepo.js';
+import { proxyRepo, splitProxyHost } from '../storage/proxyRepo.js';
 import { pingDb, releaseStaleLeases } from '../db/pool.js';
 import { identityRepo } from '../storage/identityRepo.js';
 import { compressScreenshot } from '../storage/shotCompressor.js';
@@ -190,50 +193,90 @@ function saveRunResult(opts: {
 }
 
 // 组装响应：截图 base64 + 回答 + 信源
+// 2026-09-22 代理 IP 调度接入（用户定稿流程）：
+//   · ipId 给定（词级流程）→ 从该 IP 下挑账号，IP 由外层统一分配/释放；
+//   · accountId 给定（手动指定账号）→ 直接校验使用该账号，走其绑定代理；
+//   · 都未给（单次问答）→ 自行挑一个 IP + 该 IP 下挑账号，用完即释放。
+// 浏览器启动时把代理真实传给 Chromium（proxyOf(账号)）。
+export type ExecuteResult =
+  | { skipped: true; reason?: string }
+  | { screenshot: string; answer: string; sources: { title: string; url: string; siteName: string }[] };
+
 export async function execute(
   platform: string,
   keyword: string,
   headed: boolean,
-  accountId?: string
-): Promise<{ screenshot: string; answer: string; sources: { title: string; url: string; siteName: string }[] }> {
+  accountId?: string,
+  ipId?: number
+): Promise<ExecuteResult> {
   let userDataDir: string | undefined = path.join(paths.profilesRoot, platform);
   let waitLoginMs = 0;
   let ledgerAccountId: string | undefined;
-  // 登录制平台统一走 /admin 账号台账（与 cli.ts:56 同一套逻辑，避免"CLI 能跑、服务端拿不到账号"）。
-  // 判定用 LOGIN_DRIVERS 而非硬编码平台名：新增台账平台（DeepSeek 等）自动生效。
+  let pickedAcc: Account | undefined;
+  let ipAlloc: IpAllocation | undefined; // 仅「单次问答」路径自行获取的 IP，finally 释放
   const loginDriver = LOGIN_DRIVERS[platform];
-  // 全平台登录制（2026-09-07：千问/文心由匿名切换为登录，所有大模型走登录台账）。
-  // 登录制平台不参与任何匿名身份机制（轮换/重生），以下两标志对其强制失效。
   const isLoginPlatform = !!loginDriver?.loginRequired;
   const rotation = isLoginPlatform ? undefined : ROTATIONS[platform];
   const reactive = isLoginPlatform ? false : REACTIVE_RESET_PLATFORMS.has(platform);
-  if (loginDriver?.loginRequired) {
-    // 指定账号优先（手动切换）；校验失败直接返回原因，绝不静默换号
-    const ready = accountId
-      ? await allocateSpecificAccount(platform, accountId)
-      : await allocateAccount(platform);
-    if (!ready.ok) throw new ApiError(409, ready.reason ?? `${platform} 没有可用登录账号`);
-    ledgerAccountId = ready.accountId;
-    userDataDir = ready.dir;
-    waitLoginMs = 0;
-  } else if (rotation) {
-    await acquireIdentity(platform);
-    userDataDir = rotation.dir;
-  } else if (reactive) {
-    userDataDir = QWEN_PROFILE_DIR;
-  } else {
-    waitLoginMs = headed ? 120_000 : 0; // 登录态平台：有头窗口内等人工登录
+  let result: Awaited<ReturnType<typeof runDiagnostic>>;
+  try {
+    if (loginDriver?.loginRequired) {
+      if (ipId) {
+        // 词级流程：该 IP 下挑账号（占用走 ipScheduler 5 分钟租约）；无账号 → 跳过并打印日志
+        pickedAcc = await acquireAccountByIp(platform, ipId);
+        if (!pickedAcc) {
+          const reason = `「${loginDriver.label}」在该词所用代理 IP 下无可用账号（ipId=${ipId}），跳过`;
+          console.log(`[${platform}] ${reason}`);
+          return { skipped: true, reason };
+        }
+        ledgerAccountId = pickedAcc.id;
+        userDataDir = pickedAcc.dir;
+      } else if (accountId) {
+        // 手动指定账号（测试/指定号）：校验后使用，走该账号绑定的代理
+        const ready = await allocateSpecificAccount(platform, accountId);
+        if (!ready.ok) throw new ApiError(409, ready.reason ?? `${platform} 没有可用登录账号`);
+        ledgerAccountId = ready.accountId;
+        userDataDir = ready.dir;
+        pickedAcc = await accountRepo().get(platform, ledgerAccountId);
+      } else {
+        // 单次问答：自行挑 IP + 该 IP 下挑账号，用完统一释放
+        ipAlloc = await acquireIp();
+        if (!ipAlloc) throw new ApiError(503, '没有可用代理 IP（请先在「代理管理」添加并启用代理）');
+        pickedAcc = await acquireAccountByIp(platform, ipAlloc.ip.id);
+        if (!pickedAcc) {
+          throw new ApiError(
+            409,
+            `「${loginDriver.label}」没有「已绑定代理 + 已登录」的可用账号（请先在账号管理给该平台账号绑定代理并登录）`
+          );
+        }
+        ledgerAccountId = pickedAcc.id;
+        userDataDir = pickedAcc.dir;
+      }
+      waitLoginMs = 0;
+    } else if (rotation) {
+      await acquireIdentity(platform);
+      userDataDir = rotation.dir;
+    } else if (reactive) {
+      userDataDir = QWEN_PROFILE_DIR;
+    } else {
+      waitLoginMs = headed ? 120_000 : 0; // 登录态平台：有头窗口内等人工登录
+    }
+    const proxy = ledgerAccountId && pickedAcc ? await proxyOf(pickedAcc) : undefined;
+    result = await runDiagnostic(keyword, {
+      platform,
+      useSystemChrome: config.useSystemChrome,
+      executablePath: config.chromePath,
+      userDataDir,
+      headless: !headed,
+      waitLoginMs,
+      ...(proxy ? { proxy } : {}),
+    });
+  } finally {
+    if (ipAlloc) ipAlloc.release(); // 单次问答自行获取的 IP：用完归还（更新使用时间 + 清占用）
   }
-  let result = await runDiagnostic(keyword, {
-    platform,
-    useSystemChrome: config.useSystemChrome,
-    executablePath: config.chromePath,
-    userDataDir,
-    headless: !headed,
-    waitLoginMs,
-  });
   if (rotation) await releaseIdentity(platform, result.loginRequired);
   if (ledgerAccountId) {
+    releaseAccountBusy(ledgerAccountId); // ipScheduler 租约（词级/单次问答挑的账号）
     await releaseAccount(platform, ledgerAccountId, !!result.answerText && !result.loginRequired, result.loginRequired);
     // ⚠️ 登录平台：打开登录账号目录后仍检测到登录墙（磁盘登录态失效/从未落盘）→ 明确失败并提示重登，
     // 绝不默默以匿名/未登录态跑完冒充成功（2026-09-07 文心实测：登录目录无 BDUSS，整轮匿名问答还报 ok）。
@@ -490,8 +533,9 @@ router.post('/api/pull/run', (req, res) => {
   res.status(202).json({ msg: 'pull 轮次已开始，进度见 GET /api/pull/status 与服务日志' });
   const cfg: PullConfig = { host, pageSize: 20, startTime, endTime };
   console.log(`[pull] 触发：host=${host} headless=${!headed} platform=${forced ? forced.join(',') : 'auto(全部启用)'} startTime=${startTime ?? '-'} endTime=${endTime ?? '-'}`);
-  // execute 自带平台身份策略（千问撞墙重生 / 文心轮换）；headed 由本轮请求决定
-  runPullRound(cfg, (platform, keyword) => execute(platform, keyword, headed), forced, (line) => console.log(`[pull] ${line}`))
+  // execute 自带平台身份策略（千问撞墙重生 / 文心轮换）；headed 由本轮请求决定；
+  // 词级流程由 runPullRound 每词先挑 IP，collect 回调把 ipId 透传给 execute（该 IP 下挑账号）
+  runPullRound(cfg, (platform, keyword, ipId) => execute(platform, keyword, headed, undefined, ipId), forced, (line) => console.log(`[pull] ${line}`))
     .then((s) => {
       pullStatus.running = false;
       pullStatus.finishedAt = Date.now();
@@ -552,7 +596,8 @@ router.post('/api/source-analysis/run', (req, res) => {
   console.log(
     `[信源分析] 触发：taskId=${status.taskId} 模式=${mode} 词数=${keywords.length} 平台=${platforms.map((p) => p.modelId).join(',')} headless=${!headed}`
   );
-  runSourceAnalysis(status, keywords, (p, kw) => execute(p, kw, headed), (p) => p, (l) =>
+  // 词级流程由 runSourceAnalysis 每词先挑 IP，collect 回调把 ipId 透传给 execute（该 IP 下挑账号）
+  runSourceAnalysis(status, keywords, (p, kw, ipId) => execute(p, kw, headed, undefined, ipId), (p) => p, (l) =>
     console.log(`[信源分析] ${l}`)
   ).catch((e: unknown) => {
     status.running = false;
@@ -621,6 +666,145 @@ router.get('/admin', (_req, res) => {
 // 挂载在 router 下（带前缀时自动带 /geoui 前缀），请求进入时 req.url 已相对 /novnc
 router.use('/novnc', (req, res) => {
   novncProxy.web(req, res, { prependPath: false });
+});
+
+// ---------- 代理 IP 管理（2026-09-22 新增） ----------
+// 协议：添加时默认 http；host 填 socks5://IP:端口 前缀自动识别为 socks5，不暴露给运维配置项。
+// IP 不做连通性测试；换绑 IP 后账号置「需重新登录」。
+router.get('/api/proxies', async (_req, res) => {
+  try {
+    const ips = await proxyRepo().list();
+    const out = [];
+    for (const ip of ips) {
+      const n = await proxyRepo().countAccountsByProxy(ip.id).catch(() => 0);
+      out.push({ ...ip, accounts: n });
+    }
+    res.status(200).json({ proxies: out });
+  } catch (e) {
+    res.status(500).json({ msg: `代理列表查询失败：${(e as Error).message}` });
+  }
+});
+
+router.post('/api/proxies', async (req, res) => {
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  const rawHost = typeof b.host === 'string' ? b.host.trim() : '';
+  if (!rawHost) {
+    res.status(400).json({ msg: '缺少 host（填 IP:端口，如 1.2.3.4:8080；socks5 填 socks5://1.2.3.4:1080）' });
+    return;
+  }
+  const parsed = splitProxyHost(rawHost);
+  const port = typeof b.port === 'number' ? b.port : parsed.port;
+  if (!parsed.host || !port || !Number.isInteger(port) || port <= 0 || port > 65535) {
+    res.status(400).json({ msg: 'host/port 无效：应为 IP:端口 或 socks5://IP:端口' });
+    return;
+  }
+  try {
+    const p = await proxyRepo().add({
+      host: parsed.host,
+      port,
+      protocol: parsed.protocol,
+      username: typeof b.username === 'string' ? b.username.trim() || undefined : undefined,
+      password: typeof b.password === 'string' ? b.password || undefined : undefined,
+      note: typeof b.note === 'string' ? b.note.trim() || undefined : undefined,
+    });
+    res.status(200).json({ ok: true, msg: `已添加代理 ${p.host}:${p.port}（${p.protocol}）`, id: p.id });
+  } catch (e) {
+    res.status(500).json({ msg: `添加失败：${(e as Error).message}` });
+  }
+});
+
+router.patch('/api/proxies/:id', async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) {
+    res.status(400).json({ msg: 'id 无效' });
+    return;
+  }
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  const patch: Record<string, unknown> = {};
+  if (typeof b.enabled === 'boolean') patch.enabled = b.enabled;
+  if (typeof b.username === 'string') patch.username = b.username.trim();
+  if (typeof b.password === 'string') patch.password = b.password;
+  if (typeof b.note === 'string') patch.note = b.note.trim();
+  try {
+    const p = await proxyRepo().patch(id, patch);
+    if (!p) {
+      res.status(404).json({ msg: '代理不存在' });
+      return;
+    }
+    res.status(200).json({ ok: true, msg: '已更新' });
+  } catch (e) {
+    res.status(500).json({ msg: `更新失败：${(e as Error).message}` });
+  }
+});
+
+router.delete('/api/proxies/:id', async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) {
+    res.status(400).json({ msg: 'id 无效' });
+    return;
+  }
+  try {
+    const n = await proxyRepo().countAccountsByProxy(id);
+    if (n > 0) {
+      res.status(409).json({ msg: `该 IP 还有 ${n} 个账号绑定，请先解绑账号再删除` });
+      return;
+    }
+    await proxyRepo().remove(id);
+    res.status(200).json({ ok: true, msg: '已删除' });
+  } catch (e) {
+    res.status(500).json({ msg: `删除失败：${(e as Error).message}` });
+  }
+});
+
+// 账号绑定 / 解绑代理 IP：绑定或换绑（含解绑）后账号必须重新登录（旧登录态归属旧出口，换出口即失效）
+router.post('/api/accounts/:platform/:accountId/proxy', async (req, res) => {
+  const platform = String(req.params.platform).toLowerCase();
+  const accountId = String(req.params.accountId);
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  const rawProxyId = b.proxyId;
+  const proxyId = rawProxyId == null ? null : Number(rawProxyId);
+  const acc = await accountRepo().get(platform, accountId);
+  if (!acc) {
+    res.status(404).json({ msg: '账号不存在' });
+    return;
+  }
+  try {
+    if (proxyId === null) {
+      // 解绑：回到宿主机出口（proxyId 置 undefined 即写入 NULL）
+      await accountRepo().patch(platform, accountId, {
+        proxyId: undefined,
+        proxyHost: undefined,
+        proxyPort: undefined,
+        status: 'none',
+        note: `已解除代理绑定（${acc.proxyHost ?? '-'}），需重新登录`,
+      });
+      res.status(200).json({ ok: true, msg: '已解绑，该账号需重新登录' });
+      return;
+    }
+    if (!Number.isInteger(proxyId)) {
+      res.status(400).json({ msg: 'proxyId 无效（传 null 解绑）' });
+      return;
+    }
+    const ip = await proxyRepo().get(proxyId);
+    if (!ip) {
+      res.status(404).json({ msg: '代理不存在' });
+      return;
+    }
+    if (ip.enabled === false) {
+      res.status(400).json({ msg: '该代理已停用，请先在代理管理里启用' });
+      return;
+    }
+    await accountRepo().patch(platform, accountId, {
+      proxyId,
+      proxyHost: ip.host,
+      proxyPort: ip.port,
+      status: 'none',
+      note: `已绑定代理 ${ip.host}:${ip.port}（${ip.protocol}），需重新登录`,
+    });
+    res.status(200).json({ ok: true, msg: `已绑定 ${ip.host}:${ip.port}，该账号需重新登录` });
+  } catch (e) {
+    res.status(500).json({ msg: `绑定失败：${(e as Error).message}` });
+  }
 });
 
 router.get('/api/login/platforms', async (_req, res) => {
