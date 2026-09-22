@@ -5,7 +5,7 @@ services:
       # 国内网络 apt/npm 直连慢/502：构建时加 --build-arg USE_CN_MIRROR=true（或 .env 里 USE_CN_MIRROR=true）
       args:
         USE_CN_MIRROR: ${USE_CN_MIRROR:-false}
-    image: geo-ui-browser:latest
+    image: ${IMAGE:-geo-ui-browser:latest}
     container_name: geo-ui-browser
     restart: unless-stopped
     # 仅映射到本机；生产请只开内网，不要用 0.0.0.0

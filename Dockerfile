@@ -48,6 +48,13 @@ RUN npm run build && npm prune --omit=dev
 COPY docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
+# —— 部署模板：镜像即部署包 ——
+# 目标服务器只需拉镜像：docker create <镜像> 后用 docker cp <容器>:/deploy/. . 提取
+# docker-compose.yml 与 .env.example，cp .env.example .env 填配置后 compose up -d 即可，
+# 全程无需代码仓库。镜像保持无状态：配置仍由宿主机 .env 注入，绝不写死在镜像里。
+COPY docker-compose.yml /deploy/docker-compose.yml
+COPY .env.example /deploy/.env.example
+
 VOLUME ["/data/geo"]
 EXPOSE 8787 6080
 

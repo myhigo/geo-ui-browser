@@ -1,8 +1,8 @@
 # geo-browser — V1 豆包采集诊断工具
 
-> 📌 **重构说明（2026-09-19）**：本仓库正准备从"本地诊断工具"重构为"服务器部署的采集服务"
-> （账号入 MySQL、产物不落盘、Docker 部署）。设计与项目笔记见 **[doc/](./doc/)** —— 维护请先读 `doc/README.md`。
-> 当前 `src/diagnostics/` 未提交，**暂时无法编译**，P0 阶段会补齐。
+> 📌 **现状说明**：本仓库已完成从"本地诊断工具"到"服务器部署的采集服务"的重构
+> （账号入 MySQL、产物不落盘、Docker 部署，镜像内嵌部署模板）。设计与项目笔记见 **[doc/](./doc/)** —— 维护请先读 `doc/README.md`。
+> 当前代码可编译（`npm run build`），各阶段进度见 `doc/project-notes.md` §6。
 
 GEO 网页模拟收录监测的 **V1 平台采集诊断工具（平台探针）**。本地有头运行、人工可介入，
 一轮诊断同时产出：4 阶段截图、**完整长截图**、before/finished HTML、network.har、
@@ -112,6 +112,23 @@ diagnostics/doubao/<时间戳>/
 ├─ result.json
 └─ report.html
 ```
+
+## 服务器部署（仅镜像，无需代码仓库）
+
+镜像内嵌部署模板（`/deploy/`），目标服务器**只拉镜像**即可完成部署：
+
+```bash
+docker pull <registry>/geo-ui-browser:latest      # 只拉镜像
+docker create --name geo-tpl <registry>/geo-ui-browser:latest
+docker cp geo-tpl:/deploy/. .                      # 取出 docker-compose.yml + .env.example
+docker rm geo-tpl
+cp .env.example .env                               # 填：IMAGE / GEO_DATA_DIR / DB_* / GEO_BASE_PATH 等
+docker compose up -d
+```
+
+- 配置一律由宿主机 `.env` 注入（数据库密码等**不进镜像**）；`IMAGE` 可指定私有仓库镜像名。
+- `GEO_DATA_DIR` 是宿主机持久化目录（必填），容器内路径恒为 `/data/geo`。
+- 带 nginx 路径前缀部署的配置与规则见 `.env.example` 内注释。
 
 ## 怎么用（关键）
 1. 跑完打开 `report.html`：看「页面元素诊断」里 **回答区域 / 信源区域** 是否 ✗。
