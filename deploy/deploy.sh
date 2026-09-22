@@ -47,6 +47,6 @@ docker compose --env-file "${ENV_FILE}" up -d
 echo
 echo "== 完成 =="
 base_path="$(grep -E '^GEO_BASE_PATH=' "${ENV_FILE}" | head -1 | cut -d= -f2- | tr -d '\r')"
-echo "  管理台：http://localhost:8787${base_path:-}/admin"
-echo "  健康检查：http://localhost:8787/healthz"
+echo "  管理台：http://127.0.0.1:8787${base_path:-}/admin"
+# echo "  健康检查：http://127.0.0.1:8787/healthz"
 echo "  停止服务：bash stop.sh（Windows 双击「停止服务.bat」）"
