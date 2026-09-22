@@ -19,9 +19,9 @@ export interface Account {
   id: string; // = account_code（如 doubao-1）
   /** 专属 profile 目录（绝对路径） */
   dir: string;
-  alias?: string;
+  remark?: string;
   /** 登录后抓取的账号昵称 */
-  marker?: string;
+  nickname?: string;
   status: AccountStatus;
   note?: string;
   createdAt?: number;
@@ -32,8 +32,6 @@ export interface Account {
   consecutiveFails?: number;
   /** 停用后不参与挑号 */
   enabled?: boolean;
-  /** 越大越优先 */
-  priority?: number;
   proxyHost?: string;
   proxyPort?: number;
   /** 绑定代理 IP 的 id（geo_ui_proxy_ip.id）；null/未填 = 不绑代理（走宿主机出口） */
@@ -87,7 +85,7 @@ export class FileAccountRepo implements AccountRepo {
         {
           id: `${platformId}-1`,
           dir: path.join(paths.profilesRoot, platformId), // 旧版目录就是平台名，保持不搬动
-          alias: '账号1',
+          remark: '账号1',
           status: (['active', 'failed', 'cooling'].includes(old.status ?? '')
             ? old.status
             : 'none') as AccountStatus,
@@ -149,8 +147,8 @@ export class FileAccountRepo implements AccountRepo {
 const FIELD_MAP: Record<string, string> = {
   id: 'account_code',
   dir: 'profile_dir',
-  alias: 'alias',
-  marker: 'marker',
+  remark: 'remark',
+  nickname: 'nickname',
   status: 'status',
   note: 'note',
   createdAt: 'created_at',
@@ -159,7 +157,6 @@ const FIELD_MAP: Record<string, string> = {
   queryDate: 'query_date',
   consecutiveFails: 'consecutive_fails',
   enabled: 'enabled',
-  priority: 'priority',
   proxyHost: 'proxy_host',
   proxyPort: 'proxy_port',
   proxyId: 'proxy_id',
@@ -172,8 +169,8 @@ const NOTE_MAX = 500;
 const clipNote = (v: unknown): unknown =>
   typeof v === 'string' && v.length > NOTE_MAX ? v.slice(0, NOTE_MAX) : v;
 
-const SELECT_COLS = `account_code AS id, profile_dir AS dir, alias, marker, status, note,
-  enabled, priority,
+const SELECT_COLS = `account_code AS id, profile_dir AS dir, remark, nickname, status, note,
+  enabled,
   UNIX_TIMESTAMP(created_at) * 1000 AS createdAt,
   UNIX_TIMESTAMP(last_used_at) * 1000 AS lastUsedAt,
   today_queries AS todayQueries, query_date AS queryDate,
@@ -183,12 +180,11 @@ const SELECT_COLS = `account_code AS id, profile_dir AS dir, alias, marker, stat
 interface Row extends RowDataPacket {
   id: string;
   dir: string;
-  alias?: string | null;
-  marker?: string | null;
+  remark?: string | null;
+  nickname?: string | null;
   status: AccountStatus;
   note?: string | null;
   enabled: number;
-  priority: number;
   createdAt?: number | string | null;
   lastUsedAt?: number | string | null;
   todayQueries?: number | null;
@@ -203,8 +199,8 @@ interface Row extends RowDataPacket {
 const toAccount = (r: Row): Account => ({
   id: r.id,
   dir: r.dir,
-  alias: r.alias ?? undefined,
-  marker: r.marker ?? undefined,
+  remark: r.remark ?? undefined,
+  nickname: r.nickname ?? undefined,
   status: r.status,
   note: r.note ?? undefined,
   createdAt: r.createdAt == null ? undefined : Number(r.createdAt),
@@ -213,7 +209,6 @@ const toAccount = (r: Row): Account => ({
   queryDate: r.queryDate ?? undefined,
   consecutiveFails: r.consecutiveFails ?? 0,
   enabled: r.enabled === 1,
-  priority: r.priority ?? 0,
   proxyHost: r.proxyHost ?? undefined,
   proxyPort: r.proxyPort ?? undefined,
   proxyId: r.proxyId == null ? undefined : Number(r.proxyId),
@@ -274,15 +269,15 @@ export class MysqlAccountRepo implements AccountRepo {
   async add(platformId: string, account: Account): Promise<void> {
     await dbPool().query(
       `INSERT INTO geo_ui_platform_account
-         (node_id, platform_id, account_code, alias, marker, status, note, profile_dir,
+         (node_id, platform_id, account_code, remark, nickname, status, note, profile_dir,
           today_queries, query_date, consecutive_fails, last_used_at, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FROM_UNIXTIME(? / 1000), NOW())`,
       [
         config.nodeId,
         platformId,
         account.id,
-        account.alias ?? null,
-        account.marker ?? null,
+        account.remark ?? null,
+        account.nickname ?? null,
         account.status,
         clipNote(account.note) ?? null,
         account.dir,

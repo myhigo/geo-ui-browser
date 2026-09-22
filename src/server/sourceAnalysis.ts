@@ -301,7 +301,7 @@ export async function runSourceAnalysis(
         }
       }
     } finally {
-      alloc.release(); // 归还 IP（清占用 + 更新使用时间，进入 120s 冷却）
+      await alloc.release(); // 归还 IP（清占用 + 更新使用时间，进入 120s 冷却）；必须 await 等落库
     }
     status.doneKeywords = i + 1;
     // 词间冷却已去掉（2026-09-22 用户定稿）：节流由 IP 120s 冷却承担

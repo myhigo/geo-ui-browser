@@ -7,11 +7,10 @@ CREATE TABLE IF NOT EXISTS geo_ui_platform_account (
   node_id           VARCHAR(64)  NOT NULL DEFAULT 'default' COMMENT '持有该账号 profile 的节点（GEO_NODE_ID）',
   platform_id       VARCHAR(32)  NOT NULL COMMENT 'doubao/qwen/wenxiaoyan/deepseek/hunyuan',
   account_code      VARCHAR(64)  NOT NULL COMMENT '业务账号号，如 doubao-1（上层 Account.id 即此值）',
-  alias             VARCHAR(64)  COMMENT '备注',
-  marker            VARCHAR(128) COMMENT '平台侧昵称（登录后抓取）',
+  remark            VARCHAR(64)  COMMENT '备注',
+  nickname          VARCHAR(128) COMMENT '平台侧昵称（登录后抓取）',
   status            VARCHAR(16)   NOT NULL DEFAULT 'none' COMMENT 'none/waiting/active/cooling/failed',
   enabled           TINYINT(1)   NOT NULL DEFAULT 1 COMMENT '0=停用，不参与挑号',
-  priority          INT          NOT NULL DEFAULT 0 COMMENT '越大越优先',
   note              TEXT,
   profile_dir       VARCHAR(512) NOT NULL COMMENT '浏览器 userDataDir 绝对路径（卷内）',
   today_queries     INT          NOT NULL DEFAULT 0,
@@ -27,7 +26,7 @@ CREATE TABLE IF NOT EXISTS geo_ui_platform_account (
   created_at        DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at        DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   UNIQUE KEY uk_node_platform_code (node_id, platform_id, account_code),
-  KEY idx_pick (node_id, platform_id, status, enabled, leased_by, priority, last_used_at)
+  KEY idx_pick (node_id, platform_id, status, enabled, leased_by, last_used_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='平台账号台账';
 
 -- 代理 IP 管理（2026-09-22 新增：收录检测/采集统一走代理池，IP 冷却轮换 + 5 分钟占用租约）

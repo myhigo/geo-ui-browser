@@ -155,8 +155,8 @@ export async function listViews(): Promise<PlatformView[]> {
   return out;
 }
 
-export async function updateAlias(platformId: string, accountId: string, alias: string): Promise<{ ok: boolean; msg: string }> {
-  if (!(await accountRepo().patch(platformId, accountId, { alias }))) return { ok: false, msg: '账号不存在' };
+export async function updateRemark(platformId: string, accountId: string, remark: string): Promise<{ ok: boolean; msg: string }> {
+  if (!(await accountRepo().patch(platformId, accountId, { remark }))) return { ok: false, msg: '账号不存在' };
   return { ok: true, msg: '备注已更新' };
 }
 
@@ -170,18 +170,6 @@ export async function setAccountEnabled(
   if (!acc) return { ok: false, msg: '账号不存在' };
   await accountRepo().patch(platformId, accountId, { enabled });
   return { ok: true, msg: `${accountId} 已${enabled ? '启用' : '停用'}` };
-}
-
-/** 置顶/取消置顶：priority 越大越优先被挑中 */
-export async function setAccountPriority(
-  platformId: string,
-  accountId: string,
-  priority: number
-): Promise<{ ok: boolean; msg: string }> {
-  const acc = await accountRepo().get(platformId, accountId);
-  if (!acc) return { ok: false, msg: '账号不存在' };
-  await accountRepo().patch(platformId, accountId, { priority });
-  return { ok: true, msg: priority > 0 ? `${accountId} 已置顶` : `${accountId} 已取消置顶` };
 }
 
 /** 删除整个账号（清目录 + 台账移除） */
@@ -210,7 +198,7 @@ export async function logoutAccount(platformId: string, accountId: string): Prom
     activeLogin = null;
   }
   fs.rmSync(acc.dir, { recursive: true, force: true });
-  await accountRepo().patch(platformId, accountId, { status: 'none', note: '已退出登录', marker: undefined, lastUsedAt: undefined });
+  await accountRepo().patch(platformId, accountId, { status: 'none', note: '已退出登录', nickname: undefined, lastUsedAt: undefined });
   return { ok: true, msg: `已退出 ${accountId}，登录态已清除` };
 }
 
@@ -428,7 +416,7 @@ async function openProbe(
   platformId: string,
   dir: string,
   proxy?: { server: string; username?: string; password?: string }
-): Promise<{ ok: boolean; loginRequired?: boolean; marker?: string; error?: string }> {
+): Promise<{ ok: boolean; loginRequired?: boolean; nickname?: string; error?: string }> {
   let context: BrowserContext;
   try {
     context = await launchPersistentRetry(dir, { ...launchOpts(proxy), headless: true });
@@ -510,10 +498,10 @@ async function openProbe(
       } catch {
         /* ignore */
       }
-      return { ok: true, loginRequired, marker: '' };
+      return { ok: true, loginRequired, nickname: '' };
     }
-    const marker = await extractAccountMarker(page, LOGIN_DRIVERS[platformId]);
-    return { ok: true, loginRequired, marker };
+    const nickname = await extractAccountMarker(page, LOGIN_DRIVERS[platformId]);
+    return { ok: true, loginRequired, nickname };
   } catch (e) {
     return { ok: false, error: `登录态探测异常：${(e as Error).message}` };
   } finally {
@@ -521,12 +509,12 @@ async function openProbe(
   }
 }
 
-/** 登录后校验：未撞墙且可提问 → ok；同时带回页面昵称（marker） */
+/** 登录后校验：未撞墙且可提问 → ok；同时带回页面昵称（nickname） */
 async function verifySession(
   platformId: string,
   dir: string,
   proxy?: { server: string; username?: string; password?: string }
-): Promise<{ ok: boolean; note?: string; marker?: string }> {
+): Promise<{ ok: boolean; note?: string; nickname?: string }> {
   const p = await openProbe(platformId, dir, proxy);
   if (!p.ok) return { ok: false, note: p.error };
   if (p.loginRequired) return { ok: false, note: '登录态校验未通过：仍检测到登录墙/无输入框' };
@@ -535,11 +523,11 @@ async function verifySession(
   //   （2026-09-07 文心实测：BDUSS 是 session cookie 未落盘 → 重开未登录 → 昵称元素不存在 → 此检查能抓到）。
   const driver = LOGIN_DRIVERS[platformId];
   if (driver && (driver.markerSelector || driver.fetchMarker)) {
-    if (!p.marker) {
+    if (!p.nickname) {
       return { ok: false, note: '登录态校验未通过：磁盘上无真实登录会话（重开后页面未显示账号昵称）' };
     }
   }
-  return { ok: true, marker: p.marker };
+  return { ok: true, nickname: p.nickname };
 }
 
 /** 发起某平台某账号（或新账号）的登录：有头窗口等人工。幂等：一次只允许一个登录会话 */
@@ -564,7 +552,7 @@ export async function startLogin(
     acc = {
       id: `${platformId}-${seq}`,
       dir: profileDirOf(platformId, seq),
-      alias: `账号${seq}`,
+      remark: `账号${seq}`,
       status: 'none',
     };
     await accountRepo().add(platformId, acc);
@@ -609,20 +597,20 @@ export async function startLogin(
       // HiXiangHiGo → 直接标 active；但 BDUSS 从未落盘 .profiles/wenxiaoyan-1 → execute 打开该目录仍是未登录，
       // 整轮匿名问答（用户报"没用登录信息"）。故统一走 verifySession 验证磁盘，昵称仅以窗口抽的优先。
       const v = await verifySession(platformId, acc.dir, await proxyOf(acc));
-      const domMarker = pendingMarker !== null ? pendingMarker : null;
-      pendingMarker = null;
+      const domMarker = pendingNickname !== null ? pendingNickname : null;
+      pendingNickname = null;
       if (v.ok) {
-        const marker = (domMarker ?? v.marker ?? '').trim();
+        const nickname = (domMarker ?? v.nickname ?? '').trim();
         // 昵称串号护栏：本次昵称与历史不一致（且历史有值）→ 明确警示
-        const changed = !!(acc.marker && marker && acc.marker !== marker);
+        const changed = !!(acc.nickname && nickname && acc.nickname !== nickname);
         await accountRepo().patch(platformId, acc.id, {
           status: 'active',
           note: changed
-            ? `昵称变化：${acc.marker} → ${marker}（确认是否登成了别的号）`
-            : marker
+            ? `昵称变化：${acc.nickname} → ${nickname}（确认是否登成了别的号）`
+            : nickname
               ? undefined
               : '未抓到昵称（页面结构可能变化），可在备注中手动标注',
-          marker: marker || acc.marker,
+          nickname: nickname || acc.nickname,
           createdAt: acc.createdAt ?? Date.now(),
           lastUsedAt: Date.now(),
           todayQueries: 0,
@@ -647,14 +635,14 @@ export async function startLogin(
 // 用户在可见登录窗口点「验证」时，已在窗口上抽好的昵称。
 // 避免在 startLogin 的异步收尾里用 openProbe 无头 context 重开目录——文心等平台 SPA 从 cookie
 // 水合登录态慢，无头重开会落在未登录首页，导致昵称抽取失败（如抓到「添加桌面快捷方式」）。
-let pendingMarker: string | null = null;
+let pendingNickname: string | null = null;
 
 export async function confirmLogin(platformId: string, accountId: string): Promise<{ ok: boolean; msg: string }> {
   if (!activeLogin || activeLogin.platformId !== platformId || activeLogin.accountId !== accountId) {
     return { ok: false, msg: '当前没有进行中的该账号登录会话（可能已结束或超时）' };
   }
   // 直接在用户刚登录完成的可见窗口上抽昵称 + 落盘：用户看到的就是这个窗口，页面确定已登录。
-  let marker = '';
+  let nickname = '';
   try {
     const pg = activeLogin.context.pages()[0];
     if (pg) {
@@ -697,7 +685,7 @@ export async function confirmLogin(platformId: string, accountId: string): Promi
       } catch {
         /* 诊断落盘失败不影响登录 */
       }
-      marker = await extractAccountMarker(pg, LOGIN_DRIVERS[platformId]);
+      nickname = await extractAccountMarker(pg, LOGIN_DRIVERS[platformId]);
       // 🍪 会话级登录 cookie 转持久（2026-09-07 文心微信登录实测：BDUSS/STOKEN/PTOKEN 全为
       // expires=-1 的 session cookie）。session cookie 在 context.close()（浏览器关闭）后被 Chrome
       // 丢弃 → 磁盘目录永无登录态 → 后续 execute 打开该目录永远未登录（"登录了却没用上"）。
@@ -729,9 +717,9 @@ export async function confirmLogin(platformId: string, accountId: string): Promi
       }
     }
   } catch {
-    marker = '';
+    nickname = '';
   }
-  pendingMarker = marker;
+  pendingNickname = nickname;
   activeLogin.confirm(true);
   return { ok: true, msg: '收到确认，正在校验登录态…' };
 }

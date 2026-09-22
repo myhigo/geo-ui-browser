@@ -228,7 +228,7 @@ export async function runPullRound(
         });
       } finally {
         // 该词所有平台处理完 → 归还 IP（清占用 + 更新 last_used_at，进入 120s 冷却）
-        alloc.release();
+        await alloc.release(); // 必须 await：等 last_used_at 落库，否则下一词挑 IP 读不到冷却时间
       }
       // 词间冷却已去掉（2026-09-22 用户定稿）：节流由 IP 120s 冷却承担
     }

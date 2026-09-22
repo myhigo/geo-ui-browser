@@ -21,7 +21,6 @@ import {
   allocateAccount,
   allocateSpecificAccount,
   setAccountEnabled,
-  setAccountPriority,
   confirmLogin,
   deleteAccount,
   listViews,
@@ -33,7 +32,7 @@ import {
   testAccount,
   closeTestAccount,
   listTestSessions,
-  updateAlias,
+  updateRemark,
 } from './loginRegistry.js';
 import { acquireIp, acquireAccountByIp, releaseAccountBusy, IpAllocation } from '../runtime/ipScheduler.js';
 import { adminPageHtml } from './loginUI.js';
@@ -272,7 +271,9 @@ export async function execute(
       ...(proxy ? { proxy } : {}),
     });
   } finally {
-    if (ipAlloc) ipAlloc.release(); // 单次问答自行获取的 IP：用完归还（更新使用时间 + 清占用）
+    // 单次问答自行获取的 IP：用完归还。必须 await —— release 内部要写 last_used_at，
+    // 不等它落库就进入下一轮会让 120s 冷却失效
+    if (ipAlloc) await ipAlloc.release();
   }
   if (rotation) await releaseIdentity(platform, result.loginRequired);
   if (ledgerAccountId) {
@@ -689,20 +690,31 @@ router.post('/api/proxies', async (req, res) => {
   const b = (req.body ?? {}) as Record<string, unknown>;
   const rawHost = typeof b.host === 'string' ? b.host.trim() : '';
   if (!rawHost) {
-    res.status(400).json({ msg: '缺少 host（填 IP:端口，如 1.2.3.4:8080；socks5 填 socks5://1.2.3.4:1080）' });
+    res.status(400).json({ msg: '缺少 IP 或域名' });
     return;
   }
   const parsed = splitProxyHost(rawHost);
-  const port = typeof b.port === 'number' ? b.port : parsed.port;
-  if (!parsed.host || !port || !Number.isInteger(port) || port <= 0 || port > 65535) {
-    res.status(400).json({ msg: 'host/port 无效：应为 IP:端口 或 socks5://IP:端口' });
+  // 端口优先取独立字段（前端 host/port 分开传，与 DB 两列对应）；未传时兼容旧的「IP:端口」合并写法
+  const portFromBody =
+    typeof b.port === 'number'
+      ? b.port
+      : typeof b.port === 'string' && b.port.trim()
+        ? Number(b.port.trim())
+        : undefined;
+  const port = portFromBody ?? parsed.port;
+  // 协议优先取独立字段；未传时按 host 前缀推断（socks5:// → socks5，否则 http）
+  // port=0 表示「直连、不设代理」，协议统一记为 direct（端口 0 不是合法监听端口）
+  const protocol =
+    port === 0 ? 'direct' : b.protocol === 'socks5' || b.protocol === 'http' ? b.protocol : parsed.protocol;
+  if (!parsed.host || !Number.isInteger(port) || port < 0 || port > 65535) {
+    res.status(400).json({ msg: 'IP 与端口无效：端口需为 0-65535 的整数（0=直连不代理）' });
     return;
   }
   try {
     const p = await proxyRepo().add({
       host: parsed.host,
       port,
-      protocol: parsed.protocol,
+      protocol,
       username: typeof b.username === 'string' ? b.username.trim() || undefined : undefined,
       password: typeof b.password === 'string' ? b.password || undefined : undefined,
       note: typeof b.note === 'string' ? b.note.trim() || undefined : undefined,
@@ -893,15 +905,15 @@ router.post('/api/login/:platform/delete', async (req, res) => {
   res.status(r.ok ? 200 : 400).json({ msg: r.msg });
 });
 
-router.post('/api/login/:platform/alias', async (req, res) => {  const id = String(req.params.platform).toLowerCase();
+router.post('/api/login/:platform/remark', async (req, res) => {  const id = String(req.params.platform).toLowerCase();
   const accountId = bodyAccountId(req);
   const b = (req.body ?? {}) as Record<string, unknown>;
-  const alias = typeof b.alias === 'string' ? b.alias.trim().slice(0, 30) : '';
-  if (!accountId || !alias) {
-    res.status(400).json({ msg: '缺少 accountId/alias' });
+  const remark = typeof b.remark === 'string' ? b.remark.trim().slice(0, 30) : '';
+  if (!accountId || !remark) {
+    res.status(400).json({ msg: '缺少 accountId/remark' });
     return;
   }
-  const r = await updateAlias(id, accountId, alias);
+  const r = await updateRemark(id, accountId, remark);
   res.status(r.ok ? 200 : 400).json({ msg: r.msg });
 });
 
@@ -916,16 +928,6 @@ router.post('/api/accounts/:platform/:accountId/toggle', async (req, res) => {
   const enabled = want.enabled === undefined ? acc.enabled === false : want.enabled === true;
   const r = await setAccountEnabled(platform, accountId, enabled);
   res.status(r.ok ? 200 : 400).json({ msg: r.msg, enabled });
-});
-
-// 置顶 / 取消置顶：priority 越大越优先被挑中
-router.post('/api/accounts/:platform/:accountId/priority', async (req, res) => {
-  const platform = String(req.params.platform).toLowerCase();
-  const accountId = String(req.params.accountId);
-  const b = (req.body ?? {}) as { priority?: unknown };
-  const priority = typeof b.priority === 'number' ? b.priority : 1;
-  const r = await setAccountPriority(platform, accountId, priority);
-  res.status(r.ok ? 200 : 400).json({ msg: r.msg, priority });
 });
 
 router.post('/api/login/:platform/test', (req, res) => {

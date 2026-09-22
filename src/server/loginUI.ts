@@ -1,5 +1,5 @@
 // 平台登录管理页（多账号版，极简无外部依赖）。入口 GET /admin。
-// 每个账号一张卡：id/别名/标识/状态 + 登录/退出/删除/改备注 + 启停/置顶，账号间独立不串。
+// 每个账号一张卡：状态/账号号/备注 + 昵称·今日查询·最近使用（两列网格）+ 代理选择 + 启停/备注/测试/删除。
 // 配置了 GEO_NOVNC_URL 时，有账号处于「登录中」会内嵌 noVNC 窗口供人工扫码 / 输入验证码。
 import { config } from '../config/index.js';
 
@@ -22,18 +22,26 @@ export function adminPageHtml(): string {
   main { flex: 1; padding: 24px 28px; max-width: 980px; }
   h2 { font-size: 16px; font-weight: 600; margin: 4px 0 14px; }
   .acc { background: #fff; border: 1px solid #e5e6eb; border-radius: 10px; padding: 16px 20px; margin-bottom: 14px; }
-  .acc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; align-items: start; }
+  .acc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 14px; align-items: start; }
   .acc-grid > .acc { margin-bottom: 0; }
   .acc-top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .acc-id { font-size: 13px; color: #4e5969; font-family: ui-monospace, monospace; }
-  .acc-alias { font-size: 14px; font-weight: 500; }
+  .acc-remark { font-size: 14px; font-weight: 500; }
   .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; margin-right: 6px; }
   .st-active { background: #00b42a; } .st-waiting { background: #ff7d00; } .st-failed { background: #f53f3f; } .st-none { background: #c9cdd4; } .st-cooling { background: #ff7d00; }
   .st-label { font-size: 13px; color: #1f2329; }
   .meta { font-size: 12px; color: #86909c; margin-top: 8px; line-height: 1.8; }
   .meta b { color: #4e5969; font-weight: 500; }
+  /* 账号卡片：标签左、值右。值列用 minmax(0,1fr) 保证长内容在列内换行而不撑破卡片 */
+  .acc-info { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 10px; margin-top: 10px; font-size: 12px; align-items: baseline; }
+  .acc-info b { color: #4e5969; font-weight: 500; word-break: break-all; }
+  .acc-row { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 12px; flex-wrap: wrap; }
+  /* 卡片最窄约 240px，下拉必须能收缩，否则会顶破卡片导致整片错行 */
+  .acc-row .proxy-sel { flex: 1 1 auto; min-width: 0; max-width: 100%; }
+  .k { color: #86909c; white-space: nowrap; }
   .note { font-size: 12px; color: #e02020; margin-top: 6px; }
   .btns { margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap; }
+  .btns .right { margin-left: auto; }
   button { background: #fff; border: 1px solid #c9cdd4; color: #4e5969; border-radius: 6px; padding: 7px 16px; font-size: 13px; cursor: pointer; }
   button:hover { border-color: #165dff; color: #165dff; }
   button.primary { background: #165dff; border-color: #165dff; color: #fff; }
@@ -84,6 +92,8 @@ var ST = { none:{t:'未登录',c:'#c9cdd4'}, waiting:{t:'登录中',c:'#ff7d00'}
 function $(s){ return document.querySelector(s); }
 function toast(m){ var t=$('#toast'); t.textContent=m; t.classList.add('show'); setTimeout(function(){ t.classList.remove('show'); }, 2400); }
 function esc(x){ return String(x==null?'':x).replace(/[&<>"]/g, function(ch){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch]; }); }
+// 紧凑时间：MM-DD HH:mm。卡片窄，完整 toLocaleString（含秒）太长会撑破布局
+function fmtTime(ts){ var d=new Date(ts); var p=function(n){ return n<10?'0'+n:''+n; }; return p(d.getMonth()+1)+'-'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes()); }
 // 2026-09-22 菜单四项定稿：代理管理 / 账号管理 / 信源分析 / 收录检测（平台移到账号管理页顶部 tab）
 function menu(platforms){
   var items = [
@@ -122,8 +132,9 @@ function renderAccounts(){
       var cur = a.proxyId||0;
       var opts = '<option value="0">不绑代理（不参与调度）</option>'
         + PROXIES.filter(function(x){ return x.enabled!==false || cur===x.id; }).map(function(x){
-          var isDirect = x.host==='127.0.0.1' && x.port===0;
-          var label = isDirect ? '宿主机（直连）' : esc(x.host)+':'+x.port+'（'+x.protocol+'）';
+          // 与代理管理页保持一致：以 port===0 判直连，标签显示 IP 而非"宿主机"
+          var isDirect = x.port===0;
+          var label = isDirect ? esc(x.host)+'（直连）' : esc(x.host)+':'+x.port+'（'+x.protocol+'）';
           return '<option value="'+x.id+'"'+(cur===x.id?' selected':'')+'>'+label+'</option>';
         }).join('');
       return '<select class="proxy-sel" data-acc="'+esc(a.id)+'">'+opts+'</select>';
@@ -142,14 +153,26 @@ function renderAccounts(){
       p.accounts.forEach(function(a){
       var st = ST[a.status] || {t:a.status,c:'#c9cdd4'};
       var off = a.enabled===false;
-      accHtml += '<div class="acc"'+(off?' style="opacity:.55"':'')+'><div class="acc-top"><span class="dot" style="background:'+st.c+'"></span><span class="st-label">'+st.t+(a.busy?'（使用中）':'')+'</span>'+(a.alias?'<span class="acc-alias">'+esc(a.alias)+'</span>':'')+(off?'<span class="meta">已停用</span>':'')+((a.priority||0)>0?'<span class="meta">置顶</span>':'')+'</div>';
-      accHtml += '<div class="meta">昵称：<b>'+esc(a.marker||'--')+'</b> ｜ 今日查询次数：<b>'+((a.todayQueries==null?0:a.todayQueries))+'</b></div>';
-      accHtml += '<div class="meta">代理 IP：'+proxySelHtml(a)+'</div>';
+      accHtml += '<div class="acc"'+(off?' style="opacity:.55"':'')+'>'
+        + '<div class="acc-top"><span class="dot" style="background:'+st.c+'"></span>'
+        + '<span class="st-label">'+st.t+(a.busy?'（使用中）':'')+'</span>'
+        + '<span class="acc-id">'+esc(a.id)+'</span>'
+        + (off?'<span class="meta" style="margin:0;">已停用</span>':'')+'</div>';
+      // 标签左 / 值右：备注 / 昵称 / 今日查询 / 最近使用 / 连续失败
+      // 备注单独一行并带标签，否则混在标题行里看不出是备注
+      accHtml += '<div class="acc-info">'
+        + '<span class="k">备注</span><b>'+esc(a.remark||'-')+'</b>'
+        + '<span class="k">昵称</span><b>'+esc(a.nickname||'-')+'</b>'
+        + '<span class="k">今日查询</span><b>'+(a.todayQueries==null?0:a.todayQueries)+'</b>'
+        + '<span class="k">最近使用</span><b>'+(a.lastUsedAt?fmtTime(a.lastUsedAt):'-')+'</b>'
+        + (a.consecutiveFails?'<span class="k">连续失败</span><b>'+a.consecutiveFails+'</b>':'')
+        + '</div>';
+      accHtml += '<div class="acc-row"><span class="k">代理</span>'+proxySelHtml(a)+'</div>';
       if(a.note) accHtml += '<div class="note">'+esc(a.note)+'</div>';
-      accHtml += '<div class="meta">'+(a.lastUsedAt?'最近使用：<b>'+new Date(a.lastUsedAt).toLocaleString()+'</b>':'最近使用：<b>-</b>')+(a.consecutiveFails?' ｜ 连续失败：<b>'+a.consecutiveFails+'</b>':'')+'</div>';
+      // 第一行：主操作（登录/验证 + 退出）
       accHtml += '<div class="btns">';
       if(a.status==='waiting') {
-        accHtml += '<button class="primary" data-kind="verify" data-acc="'+a.id+'">我已登录完成，验证</button>';
+        accHtml += '<button class="primary" data-kind="verify" data-acc="'+a.id+'">验证登录</button>';
       } else if(a.status==='active' || a.status==='cooling') {
         // 已登录态：登录按钮置灰、不可点击（避免重复登录）
         accHtml += '<button class="primary" data-kind="start" data-acc="'+a.id+'" disabled title="已登录，无需重复登录">登录</button>';
@@ -157,16 +180,18 @@ function renderAccounts(){
         accHtml += '<button class="primary" data-kind="start" data-acc="'+a.id+'">登录</button>';
       }
       if(a.status!=='none' && a.status!=='waiting') accHtml += '<button data-kind="logout" data-acc="'+a.id+'">退出</button>';
+      accHtml += '</div>';
+      // 第二行：次要操作 + 删除靠右
+      accHtml += '<div class="btns">';
       if(a.status!=='waiting') {
-        accHtml += '<button data-kind="alias" data-acc="'+a.id+'">改备注</button>';
+        accHtml += '<button data-kind="remark" data-acc="'+a.id+'">备注</button>';
         accHtml += '<button data-kind="toggle" data-acc="'+a.id+'">'+(off?'启用':'停用')+'</button>';
-        accHtml += '<button data-kind="priority" data-acc="'+a.id+'">'+((a.priority||0)>0?'取消置顶':'置顶')+'</button>';
       }
       // 仅「已登录」状态的账号显示测试按钮（active=已登录 / cooling=冷却中；none/waiting/failed 不显示）
       if(a.status==='active' || a.status==='cooling') {
         accHtml += '<button data-testbtn="'+p.platformId+'/'+a.id+'">测试</button>';
       }
-      accHtml += '<button class="danger" data-kind="delete" data-acc="'+a.id+'">删除账号</button>';
+      accHtml += '<button class="danger right" data-kind="delete" data-acc="'+a.id+'">删除</button>';
       accHtml += '</div></div>';
       });
       accHtml += '</div>';
@@ -184,7 +209,7 @@ function renderAccounts(){
       if(p.hint) shell += '<div class="hint">'+esc(p.hint)+'</div>';
       if(needVnc){
         shell += '<div class="acc" style="margin-bottom:14px;">'
-          + '<div class="meta" style="margin-bottom:8px;">登录窗口：请在下方窗口内完成扫码 / 输入验证码，完成后点账号卡上的「我已登录完成，验证」。</div>'
+          + '<div class="meta" style="margin-bottom:8px;">登录窗口：请在下方窗口内完成扫码 / 输入验证码，完成后点账号卡上的「验证登录」。</div>'
           + '<iframe id="novnc" src="'+esc(NOVNC_URL)+'" style="width:100%;height:760px;border:1px solid #e5e6eb;border-radius:8px;background:#000;"></iframe>'
           + '<div style="display:flex;gap:8px;margin-top:10px;align-items:center;">'
           + '<input id="vnc-text" class="inp" style="flex:1;" placeholder="手机号 / 验证码：填入后点「发送到窗口」">'
@@ -242,25 +267,30 @@ function renderProxies(){
   if(POLL) clearInterval(POLL); POLL=null;
   $('#panel').innerHTML =
       '<h2>代理管理</h2>'
-    + '<div class="acc"><div class="meta">新增代理（格式：IP:端口，例如 1.2.3.4:8080；socks5 填 socks5://1.2.3.4:1080，协议自动识别，无需额外配置）</div>'
-    + '<div style="display:flex;gap:8px;flex-wrap:wrap;margin:10px 0;">'
-    + '<input id="px-host" class="inp" style="width:220px;" placeholder="IP:端口 或 socks5://IP:端口">'
-    + '<input id="px-user" class="inp" style="width:140px;" placeholder="账号（可选）">'
-    + '<input id="px-pass" class="inp" style="width:140px;" type="password" placeholder="密码（可选）">'
-    + '<input id="px-note" class="inp" style="width:160px;" placeholder="备注（可选）">'
-    + '<button class="primary" id="px-add">添加</button></div>'
-    + '<div class="meta">IP 使用后冷却 <b>'+IP_INTERVAL+'</b> 秒自动轮换（LRU：最早用的先复用）；不提供连通性测试；已绑定账号的 IP 需先解绑账号才能删除。</div></div>'
+    + '<div class="acc"><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">'
+    + '<input id="px-host" class="inp" style="width:180px;" placeholder="IP 或域名">'
+    + '<input id="px-port" class="inp" style="width:110px;" placeholder="端口（0=直连）">'
+    + '<select id="px-proto" class="inp" style="width:96px;"><option value="http">http</option><option value="socks5">socks5</option></select>'
+    + '<input id="px-user" class="inp" style="width:130px;" placeholder="账号（可选）">'
+    + '<input id="px-pass" class="inp" style="width:130px;" type="password" placeholder="密码（可选）">'
+    + '<input id="px-note" class="inp" style="width:150px;" placeholder="备注（可选）">'
+    + '<button class="primary" id="px-add">添加</button></div></div>'
     + '<div id="px-list" style="margin-top:14px;">加载中…</div>';
   $('#px-add').onclick = function(){
     var host = $('#px-host').value.trim();
-    if(!host){ toast('请填 IP:端口'); return; }
-    var payload = { host: host };
+    var portRaw = $('#px-port').value.trim();
+    if(!host){ toast('请填 IP 或域名'); return; }
+    if(portRaw === ''){ toast('请填端口（0 = 直连不代理）'); return; }
+    var port = Number(portRaw);
+    if(!Number.isInteger(port) || port < 0 || port > 65535){ toast('端口需为 0-65535 的整数（0 = 直连不代理）'); return; }
+    // host / port 分开传，与 geo_ui_proxy_ip 的 host、port 两列一一对应
+    var payload = { host: host, port: port, protocol: $('#px-proto').value };
     var u = $('#px-user').value.trim(); if(u) payload.username = u;
     var p = $('#px-pass').value; if(p) payload.password = p;
     var n = $('#px-note').value.trim(); if(n) payload.note = n;
     fetch(api('/api/proxies'), { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(payload) })
       .then(function(r){ return r.json().catch(function(){ return {msg:'响应解析失败'}; }); })
-      .then(function(j){ toast((j&&j.msg)||'已添加'); $('#px-host').value=''; $('#px-user').value=''; $('#px-pass').value=''; $('#px-note').value=''; pxTick(); })
+      .then(function(j){ toast((j&&j.msg)||'已添加'); $('#px-host').value=''; $('#px-port').value=''; $('#px-user').value=''; $('#px-pass').value=''; $('#px-note').value=''; pxTick(); })
       .catch(function(e){ toast('请求失败：'+e.message); });
   };
   pxTick();
@@ -270,10 +300,11 @@ function pxTick(){
   fetch(api('/api/proxies')).then(function(r){ return r.json(); }).then(function(d){
     var box = $('#px-list'); if(!box) return;
     var list = d.proxies||[];
-    if(!list.length){ box.innerHTML = '<div class="empty">还没有代理 IP。在上方添加后，再到「账号管理」给账号绑定代理并重新登录。（宿主机直连行会随服务启动自动出现，账号绑它即走宿主机出口）</div>'; return; }
+    if(!list.length){ box.innerHTML = '<div class="empty">还没有代理 IP（宿主机直连行会随服务启动自动出现）。</div>'; return; }
     box.innerHTML = list.map(function(p){
-      var isDirect = p.host==='127.0.0.1' && p.port===0;
-      var title = isDirect ? '宿主机（直连）' : esc(p.host)+':'+p.port;
+      // port=0 即直连（不设代理）。标题一律显示 IP，直连与否由后面的协议徽标（直连/http/socks5）区分
+      var isDirect = p.port===0;
+      var title = isDirect ? esc(p.host) : esc(p.host)+':'+p.port;
       var proto = p.protocol==='direct' ? '直连' : esc(p.protocol);
       return '<div class="acc"><div class="acc-top">'
         + '<span class="st-label" style="font-family:ui-monospace,monospace;">'+title+'</span>'
@@ -282,7 +313,7 @@ function pxTick(){
         + '</div>'
         + '<div class="meta">绑定账号：<b>'+p.accounts+'</b> ｜ 最近使用：<b>'+(p.lastUsedAt?new Date(p.lastUsedAt).toLocaleString():'从未使用')+'</b>'
         + (p.username?' ｜ 账号：<b>'+esc(p.username)+'</b>':'')
-        + (p.note?' ｜ 备注：<b>'+esc(p.note)+'</b>':'') + '</div>'
+        + (isDirect?'':(p.note?' ｜ 备注：<b>'+esc(p.note)+'</b>':'')) + '</div>'
         + '<div class="btns"><button data-px="'+p.id+'" data-pxact="toggle" data-en="'+(p.enabled?'1':'0')+'">'+(p.enabled?'停用':'启用')+'</button>'
         + '<button class="danger" data-px="'+p.id+'" data-pxact="del">删除</button></div></div>';
     }).join('');
@@ -367,7 +398,7 @@ function saHistory(){
           var label = t.name ? t.name : t.taskId;
           // 整条条目可点 → 调 open 接口在文件管理器打开对应目录（不罗列目录内文件）
           return '<div class="sa-task" data-open="'+esc(t.taskId)+'" style="padding:10px 0;border-bottom:1px solid #f2f3f5;cursor:pointer;">'
-            + '<div class="acc-top" style="justify-content:space-between;"><span class="acc-alias" style="font-weight:600;">'+esc(label)+'</span>'
+            + '<div class="acc-top" style="justify-content:space-between;"><span class="acc-remark" style="font-weight:600;">'+esc(label)+'</span>'
             + '<span class="meta">'+t.keywords+' 词 ｜ '+dt+'</span></div>'
             + '<div class="meta">'+esc(t.taskId)+'</div></div>';
         }).join('') + '</div>';
@@ -453,7 +484,7 @@ function pullStatusTick(){
 function post(kind, accountId, extra){
   if(kind!=='start' && !accountId){ toast('缺少账号'); return; }
   var plat = (CUR==='__accounts') ? ACC_PLATFORM : CUR;
-  var url = (kind==='toggle'||kind==='priority')
+  var url = (kind==='toggle')
     ? api('/api/accounts/'+plat+'/'+accountId+'/'+kind)
     : api('/api/login/'+plat+'/'+kind);
   var body = { accountId: accountId||undefined };
@@ -500,21 +531,16 @@ document.addEventListener('click', function(ev){
   if(b.hasAttribute('disabled')) return; // 已登录态：登录按钮置灰，禁止触发
   var kind = b.getAttribute('data-kind');
   var acc = b.getAttribute('data-acc') || undefined;
-  if(kind==='alias'){
-    var alias = prompt('账号备注（用于区分账号，如：主号-尾号1234）');
-    if(alias===null || !alias.trim()) return;
-    fetch(api('/api/login/'+((CUR==='__accounts')?ACC_PLATFORM:CUR)+'/alias'), { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({accountId:acc, alias:alias.trim()}) })
+  if(kind==='remark'){
+    var remark = prompt('账号备注（用于区分账号，如：主号-尾号1234）');
+    if(remark===null || !remark.trim()) return;
+    fetch(api('/api/login/'+((CUR==='__accounts')?ACC_PLATFORM:CUR)+'/remark'), { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({accountId:acc, remark:remark.trim()}) })
       .then(function(r){ return r.json(); }).then(function(j){ toast((j&&j.msg)||'已更新'); render(); })
       .catch(function(e){ toast('请求失败：'+e.message); });
     return;
   }
   if(kind==='delete' && !confirm('确认删除账号 '+(acc||'')+'？目录与登录态都会被清掉。')) return;
   if(kind==='toggle'){ post(kind, acc); return; }
-  if(kind==='priority'){
-    var isTop = b.textContent === '取消置顶';
-    post(kind, acc, { priority: isTop ? 0 : 1 });
-    return;
-  }
   post(kind, acc);
 });
 // 账号绑定代理下拉（change 事件；2026-09-22）

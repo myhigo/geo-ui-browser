@@ -70,8 +70,8 @@ export function ipRemainingCooldown(ip: ProxyIp): number {
 
 export interface IpAllocation {
   ip: ProxyIp;
-  /** 用完后必须调用 releaseIp(id) */
-  release: () => void;
+  /** 用完后必须 await 调用（写 last_used_at 并清占用；不 await 会导致下一次挑 IP 读到旧时间，冷却失效） */
+  release: () => Promise<void>;
 }
 
 /**
@@ -82,6 +82,7 @@ export interface IpAllocation {
  */
 export async function acquireIp(timeoutMs = 5 * 60 * 1000): Promise<IpAllocation | null> {
   const t0 = Date.now();
+  let waitLogged = false;
   for (;;) {
     const ips = await proxyRepo().list();
     const free = ips.filter(
@@ -98,6 +99,12 @@ export async function acquireIp(timeoutMs = 5 * 60 * 1000): Promise<IpAllocation
     const wait = ipRemainingCooldown(pick);
     if (wait > 0) {
       if (Date.now() - t0 + wait >= timeoutMs) return null;
+      if (!waitLogged) {
+        console.log(
+          `[ipScheduler] IP ${pick.id}（${pick.host}:${pick.port}）冷却中，还需等待 ${Math.ceil(wait / 1000)}s（GEO_IP_INTERVAL=${config.ipIntervalSec}s）`
+        );
+        waitLogged = true;
+      }
       // 等待该 IP 冷却结束（等待期间可能有更早的 IP 冷却完成，下一轮会重新排序）
       await sleep(Math.min(wait, 5000));
       continue;
@@ -107,11 +114,16 @@ export async function acquireIp(timeoutMs = 5 * 60 * 1000): Promise<IpAllocation
     const id = pick.id;
     return {
       ip: pick,
-      release: () => {
+      release: async () => {
         clearBusy(`ip:${id}`);
-        void proxyRepo()
-          .patch(id, { lastUsedAt: Date.now() })
-          .catch(() => {});
+        // ❗必须 await 落库：调用方 release 后通常立刻挑下一个 IP，
+        // 若这里不等，下一次 list() 会读到旧的 last_used_at，120s 冷却形同虚设。
+        // 失败也要打日志，不能静默吞掉（否则"冷却不生效"无从排查）。
+        try {
+          await proxyRepo().patch(id, { lastUsedAt: Date.now() });
+        } catch (e) {
+          console.warn(`[ipScheduler] 归还 IP ${id} 时更新 last_used_at 失败：${(e as Error).message}`);
+        }
       },
     };
   }
@@ -170,7 +182,7 @@ export async function acquireForTask(
   const account = await acquireAccountByIp(platformId, alloc.ip.id);
   if (!account) {
     // 该 IP 下没有该平台的账号 → 归还 IP，返回空（调用方决定跳过）
-    alloc.release();
+    await alloc.release();
     return { ip: alloc, account: undefined };
   }
   return { ip: alloc, account };

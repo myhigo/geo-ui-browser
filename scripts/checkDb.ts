@@ -16,8 +16,8 @@ interface TblRow extends RowDataPacket {
 
 const REQUIRED: Record<string, string[]> = {
   geo_ui_platform_account: [
-    'node_id', 'platform_id', 'account_code', 'alias', 'marker', 'status', 'enabled',
-    'priority', 'note', 'profile_dir', 'today_queries', 'query_date', 'consecutive_fails',
+    'node_id', 'platform_id', 'account_code', 'remark', 'nickname', 'status', 'enabled',
+    'note', 'profile_dir', 'today_queries', 'query_date', 'consecutive_fails',
     'last_used_at', 'leased_by', 'leased_at', 'proxy_host', 'proxy_port', 'created_at', 'updated_at',
   ],
   geo_ui_identity_state: ['node_id', 'state_key', 'payload', 'updated_at'],
