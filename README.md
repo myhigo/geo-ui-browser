@@ -115,20 +115,31 @@ diagnostics/doubao/<时间戳>/
 
 ## 服务器部署（仅镜像，无需代码仓库）
 
-镜像内嵌部署模板（`/deploy/`），目标服务器**只拉镜像**即可完成部署：
+镜像内嵌部署模板（`/deploy/`），目标服务器**只拉镜像**即可完成部署，规则如下：
 
 ```bash
-docker pull <registry>/geo-ui-browser:latest      # 只拉镜像
+# ① 拉镜像
+docker pull <registry>/geo-ui-browser:latest
+
+# ② 从镜像提取部署脚本 + 模板（只需一次；之后服务器上会有 deploy.sh / docker-compose.yml / .env.example）
 docker create --name geo-tpl <registry>/geo-ui-browser:latest
-docker cp geo-tpl:/deploy/. .                      # 取出 docker-compose.yml + .env.example
+docker cp geo-tpl:/deploy/. .
 docker rm geo-tpl
-cp .env.example .env                               # 填：IMAGE / GEO_DATA_DIR / DB_* / GEO_BASE_PATH 等
-docker compose up -d
+
+# ③ 准备配置：复制模板为 geo-ui-env 并填值（IMAGE / GEO_DATA_DIR / DB_* / GEO_BASE_PATH 等）
+cp .env.example geo-ui-env
+vi geo-ui-env
+
+# ④ 一键启动（自动检查镜像、compose 模板，幂等可重复执行）
+bash deploy.sh
 ```
 
-- 配置一律由宿主机 `.env` 注入（数据库密码等**不进镜像**）；`IMAGE` 可指定私有仓库镜像名。
+**一台新电脑部署需要 4 样东西**：Docker（含 compose v2）、镜像、`geo-ui-env` 配置文件、可访问的外部 MySQL（表已建好）。
+
+- 配置一律由宿主机 `geo-ui-env` 注入（数据库密码等**不进镜像**）；`IMAGE` 可指定私有仓库镜像名。
 - `GEO_DATA_DIR` 是宿主机持久化目录（必填），容器内路径恒为 `/data/geo`。
-- 带 nginx 路径前缀部署的配置与规则见 `.env.example` 内注释。
+- 带 nginx 路径前缀部署的配置与规则见 `geo-ui-env` 内注释。
+- 已部署过的机器再次升级：`docker pull` 新镜像 → 直接 `bash deploy.sh`（无需重新提取）。
 
 ## 怎么用（关键）
 1. 跑完打开 `report.html`：看「页面元素诊断」里 **回答区域 / 信源区域** 是否 ✗。
