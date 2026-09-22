@@ -113,28 +113,28 @@ diagnostics/doubao/<时间戳>/
 └─ report.html
 ```
 
-## 服务器部署
+## 服务器部署（微信传文件 / 一键部署包）
 
-分工：**镜像 = 程序，仓库 = 模板文件**。把仓库里的三个模板文件（`docker-compose.yml` / `.env.example` / `deploy.sh`）提前放到服务器任意目录（scp 一次，或首次 `git clone`），之后每次部署只需拉镜像、改模板、启动：
+`deploy/` 目录就是**完整部署包**（镜像=程序，部署包=配置+启动脚本），可直接整个文件夹（或 zip）通过微信发到目标电脑使用：
 
-```bash
-# ① 拉镜像（私有仓库写你自己的 registry）
-docker pull <registry>/geo-ui-browser:latest
+| 文件 | 作用 |
+|---|---|
+| `部署说明.txt` | 给使用者看的 3 步说明，先读它 |
+| `启动服务.bat` / `deploy.sh` | Windows 双击 / Linux·macOS `bash deploy.sh` |
+| `geo-ui-env` | 配置（已预填好，只需补 `DB_PASSWORD`） |
+| `docker-compose.yml` | 容器编排 |
+| `停止服务.bat` / `stop.sh` | 停止服务 |
 
-# ② 改模板：复制为 geo-ui-env 并填值（IMAGE / GEO_DATA_DIR / DB_* / GEO_BASE_PATH 等）
-cp .env.example geo-ui-env
-vi geo-ui-env
+**目标电脑使用流程（3 步，无任何命令操作）**：
+1. 把 `deploy/` 文件夹（或 zip）发到目标电脑，解压到任意目录（路径不要带中文/空格）；
+2. 记事本打开 `geo-ui-env`，填 `DB_PASSWORD=`（其余值已配好，一般不用动）；
+3. Windows 双击「启动服务.bat」；Linux/macOS 终端运行 `bash deploy.sh`。首次运行自动拉镜像，之后秒起。
 
-# ③ 一键启动（幂等，可重复执行）
-bash deploy.sh
-```
-
-**一台新电脑部署需要 4 样东西**：Docker（含 compose v2）、镜像、`geo-ui-env` 配置文件、可访问的外部 MySQL（表已建好）。
-
-- 配置一律由宿主机 `geo-ui-env` 注入（数据库密码等**不进镜像**）；`IMAGE` 可指定私有仓库镜像名。
-- `GEO_DATA_DIR` 是宿主机持久化目录（必填），容器内路径恒为 `/data/geo`。
-- 带 nginx 路径前缀部署的配置与规则见 `geo-ui-env` 内注释。
-- 升级：`docker pull` 新镜像 → 直接 `bash deploy.sh`。
+需要的东西：Docker（含 compose v2）、镜像（自动拉取）、`geo-ui-env`、可访问的外部 MySQL（表已建好）。
+- 数据库密码等敏感配置只存在于宿主机 `geo-ui-env`，**不进镜像、不进 git**。
+- 管理台默认 `http://localhost:8787/geoui/admin`；去掉前缀/改端口：改 `geo-ui-env` 的 `GEO_BASE_PATH`。
+- 升级：拿新版部署包，`geo-ui-env` 填同样密码后重新启动即可。
+- 对公网/内网提供服务时配 nginx，规则见 `geo-ui-env` 顶部注释与上文「nginx 路径前缀部署」。
 
 ## 怎么用（关键）
 1. 跑完打开 `report.html`：看「页面元素诊断」里 **回答区域 / 信源区域** 是否 ✗。

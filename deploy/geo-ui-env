@@ -1,0 +1,34 @@
+# ===== geo-ui-browser 配置 =====
+# 部署包已配好默认值，一般只需填 DB_PASSWORD。
+# 用记事本打开修改、保存即可；改动在下次启动时生效（启动脚本会自动重建容器）。
+
+# 镜像名（私有仓库改成你自己的镜像地址）
+IMAGE=geo-ui-browser:latest
+
+# 数据目录（宿主机路径，存浏览器 profile；容器内固定 /data/geo）
+GEO_DATA_DIR=./data
+
+# 存储：mysql=写数据库（生产）；file=仅本机空跑测试（不连库）
+GEO_STORAGE=mysql
+
+# nginx 路径前缀部署时填（如 /geoui），留空=根路径部署
+GEO_BASE_PATH=/geoui
+
+# noVNC 地址：留空自动生成；无 nginx 直连时才需要显式填
+GEO_NOVNC_URL=
+
+# 截图/结果落盘：none=不落盘；debug=落盘到 GEO_DATA_DIR 便于人工验证
+GEO_ARTIFACT_MODE=debug
+
+GEO_HEADLESS=true
+GEO_MAX_BROWSERS=4
+GEO_MAX_PER_EGRESS=1
+GEO_NODE_ID=default
+USE_CN_MIRROR=true
+
+# ===== MySQL 连接（必填：DB_PASSWORD）=====
+DB_HOST=82.156.236.195
+DB_PORT=13333
+DB_USER=root
+DB_PASSWORD=
+DB_NAME=joolun_post_agent_test

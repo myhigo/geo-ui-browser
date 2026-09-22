@@ -1,0 +1,49 @@
+services:
+  geo:
+    build:
+      context: .
+      # 国内网络 apt/npm 直连慢/502：构建时加 --build-arg USE_CN_MIRROR=true（或 .env 里 USE_CN_MIRROR=true）
+      args:
+        USE_CN_MIRROR: ${USE_CN_MIRROR:-false}
+    image: ${IMAGE:-geo-ui-browser:latest}
+    container_name: geo-ui-browser
+    restart: unless-stopped
+    # 仅映射到本机；生产请只开内网，不要用 0.0.0.0
+    ports:
+      - "127.0.0.1:8787:8787"   # API + /admin
+      - "127.0.0.1:6080:6080"   # noVNC（/admin 内嵌或直连）
+    environment:
+      TZ: Asia/Shanghai
+      GEO_NODE_ID: ${GEO_NODE_ID:-default}
+      # 挂载前缀：单域名多服务、由 nginx 用路径前缀区分时填（如 /geoui）。留空=根路径部署。
+      # 填了之后所有路由/前端链接加前缀，且 nginx 转发需「保留前缀」（proxy_pass 不带末尾 /）。
+      GEO_BASE_PATH: ${GEO_BASE_PATH:-}
+      GEO_STORAGE: ${GEO_STORAGE:-mysql}
+      DB_HOST: ${DB_HOST:-}
+      DB_PORT: ${DB_PORT:-3306}
+      DB_USER: ${DB_USER:-}
+      DB_PASSWORD: ${DB_PASSWORD:-}
+      DB_NAME: ${DB_NAME:-}
+      GEO_DATA_ROOT: /data/geo
+      GEO_PULL_HOST: ${GEO_PULL_HOST:-}
+      # 留空让应用按 GEO_BASE_PATH 自动生成（会自动带上 noVNC 子路径反代必需的 path 参数）；
+      # 无 nginx 直连时在 .env 里显式填 http://<host>:6080/vnc.html?autoconnect=1&resize=scale
+      GEO_NOVNC_URL: ${GEO_NOVNC_URL:-}
+      # 测试结果落盘目录（容器内路径，留空=不落盘）；挂到宿主机 geo-ui-data 下便于人工验证
+      GEO_TEST_OUT_DIR: ${GEO_TEST_OUT_DIR:-}
+      GEO_ARTIFACT_MODE: ${GEO_ARTIFACT_MODE:-none}
+      GEO_HEADLESS: ${GEO_HEADLESS:-true}
+      GEO_MAX_BROWSERS: ${GEO_MAX_BROWSERS:-4}
+      GEO_MAX_PER_EGRESS: ${GEO_MAX_PER_EGRESS:-1}
+      GEO_TIMEOUT_MS: ${GEO_TIMEOUT_MS:-180000}
+    volumes:
+      # 唯一有状态的部分：浏览器 profile。宿主机侧路径由 .env 的 GEO_DATA_DIR 注入（必填，无默认值）
+      - ${GEO_DATA_DIR}:/data/geo
+    shm_size: "1gb"               # 默认 64MB 会让 Chrome 崩
+    stop_grace_period: 30s        # 留给优雅退出关浏览器
+
+# 本机想跑"不接数据库"的空跑测试：
+#   echo "GEO_STORAGE=file" > .env && docker compose up -d
+# 连宿主机 MySQL（Linux 需再加 extra_hosts）：
+#   extra_hosts:
+#     - "host.docker.internal:host-gateway"
