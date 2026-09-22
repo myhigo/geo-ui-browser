@@ -335,9 +335,13 @@ function withTimeout<T>(p: Promise<T>): Promise<T> {
 }
 
 const app = express();
+const router = express.Router();
 app.use(express.json({ limit: '1mb' }));
 
-// 健康检查（容器 HEALTHCHECK 用）：正在关闭时返回 503，便于编排层摘流量
+// 健康检查（容器 HEALTHCHECK 用）：正在关闭时返回 503，便于编排层摘流量。
+// ⚠️ 必须挂在 app（根路径）上、不随 GEO_BASE_PATH 加前缀：
+// Dockerfile HEALTHCHECK 固定请求容器内 127.0.0.1:8787/healthz（不经 nginx），
+// 若挪到前缀路由下，带前缀部署时健康检查恒 404，容器会被判 unhealthy。
 app.get('/healthz', (_req, res) => {
   res.status(isShuttingDown() ? 503 : 200).json({
     ok: !isShuttingDown(),
@@ -346,8 +350,13 @@ app.get('/healthz', (_req, res) => {
   });
 });
 
+// 根路径便捷重定向到管理台（无前缀部署时访问 / 直接进 /admin）
+app.get('/', (_req, res) => {
+  res.redirect(`${config.basePath}/admin`);
+});
+
 // 采集问答
-app.post('/api/web-collect', (req, res) => {
+router.post('/api/web-collect', (req, res) => {
   const body = (req.body ?? {}) as Record<string, unknown>;
   const rawPlatform = typeof body.platform === 'string' ? body.platform.toLowerCase().trim() : '';
   const platform = rawPlatform;
@@ -401,7 +410,7 @@ const pullStatus = {
 };
 
 // 手动触发一轮 pull：后台跑，202 立即返回；进度看 GET /api/pull/status 与服务日志
-app.post('/api/pull/run', (req, res) => {
+router.post('/api/pull/run', (req, res) => {
   const body = (req.body ?? {}) as Record<string, unknown>;
   // 对方服务地址：请求体 pullHost 优先，其次环境变量 GEO_PULL_HOST；允许省略 http:// 前缀
   const bodyHost = typeof body.pullHost === 'string' ? body.pullHost.trim() : '';
@@ -479,7 +488,7 @@ app.post('/api/pull/run', (req, res) => {
 });
 
 // pull 轮次进度（内存态，仅当轮）
-app.get('/api/pull/status', (_req, res) => {
+router.get('/api/pull/status', (_req, res) => {
   res.status(200).json(pullStatus);
 });
 
@@ -487,7 +496,7 @@ app.get('/api/pull/status', (_req, res) => {
 // 口径见 sourceAnalysis.ts 顶部注释（citeCount 不去重 / 全程串行 / 按平台各自独立聚合）。
 let analysisStatus: AnalysisProgress | null = null;
 
-app.post('/api/source-analysis/run', (req, res) => {
+router.post('/api/source-analysis/run', (req, res) => {
   const body = (req.body ?? {}) as Record<string, unknown>;
   // 关键词：可接受数组，也可直接把 textarea 整段文本丢进来（按行切、去空行）
   const rawKw = body.keywords;
@@ -534,17 +543,17 @@ app.post('/api/source-analysis/run', (req, res) => {
   });
 });
 
-app.get('/api/source-analysis/status', (_req, res) => {
+router.get('/api/source-analysis/status', (_req, res) => {
   res.status(200).json(analysisStatus ?? { running: false });
 });
 
 // 历史任务（倒序），页面回看/下载用
-app.get('/api/source-analysis/tasks', (_req, res) => {
+router.get('/api/source-analysis/tasks', (_req, res) => {
   res.status(200).json({ tasks: listTasks() });
 });
 
 // 产物文件；加 ?download=1 走附件下载
-app.get('/api/source-analysis/file/:taskId/:file', (req, res) => {
+router.get('/api/source-analysis/file/:taskId/:file', (req, res) => {
   const content = readTaskFile(req.params.taskId, req.params.file);
   if (content === null) {
     res.status(404).json({ msg: '文件不存在' });
@@ -557,7 +566,7 @@ app.get('/api/source-analysis/file/:taskId/:file', (req, res) => {
 });
 
 // 打开产物目录（点击历史任务名称时调用）：macOS 用 open 唤起 Finder 选中目录，其余平台仅返回路径
-app.post('/api/source-analysis/open', (req, res) => {
+router.post('/api/source-analysis/open', (req, res) => {
   const body = (req.body ?? {}) as Record<string, unknown>;
   const taskId = String(body.taskId ?? '').trim();
   // taskId 即产物目录名（允许中文/常见字符）；仅拦截路径穿越
@@ -580,11 +589,16 @@ app.post('/api/source-analysis/open', (req, res) => {
 });
 
 // ---------- 平台登录管理（页面 + 接口；账号级操作，id→dir 台账唯一映射防串） ----------
-app.get('/admin', (_req, res) => {
+// 带前缀部署时访问前缀根（如 /geoui/）→ 管理台
+router.get('/', (_req, res) => {
+  res.redirect(`${config.basePath}/admin`);
+});
+
+router.get('/admin', (_req, res) => {
   res.type('html').send(adminPageHtml());
 });
 
-app.get('/api/login/platforms', async (_req, res) => {
+router.get('/api/login/platforms', async (_req, res) => {
   const busy = loginBusy();
   const testing = new Set(listTestSessions());
   res.status(200).json({
@@ -602,12 +616,12 @@ app.get('/api/login/platforms', async (_req, res) => {
 });
 
 // 已打开的测试窗口列表（platformId/accountId），前端轮询回显按钮状态
-app.get('/api/login/test/sessions', (_req, res) => {
+router.get('/api/login/test/sessions', (_req, res) => {
   res.status(200).json({ sessions: listTestSessions() });
 });
 
 // 采集平台清单（信源分析页勾选用）：平台 modeId / 中文名 / 是否登录制
-app.get('/api/platforms', (_req, res) => {
+router.get('/api/platforms', (_req, res) => {
   res.status(200).json({
     platforms: ENABLED_PLATFORMS.map((id) => ({
       platformId: id,
@@ -623,7 +637,7 @@ function bodyAccountId(req: { body?: unknown }): string | undefined {
   return typeof b.accountId === 'string' && b.accountId.trim() ? b.accountId.trim() : undefined;
 }
 
-app.post('/api/login/:platform/start', (req, res) => {
+router.post('/api/login/:platform/start', (req, res) => {
   const id = String(req.params.platform).toLowerCase();
   if (!(id in LOGIN_DRIVERS)) {
     res.status(404).json({ msg: `未注册的登录平台：${id}` });
@@ -635,7 +649,7 @@ app.post('/api/login/:platform/start', (req, res) => {
     .catch((e: unknown) => res.status(500).json({ msg: (e as Error).message }));
 });
 
-app.post('/api/login/:platform/verify', async (req, res) => {
+router.post('/api/login/:platform/verify', async (req, res) => {
   const id = String(req.params.platform).toLowerCase();
   const accountId = bodyAccountId(req);
   if (!accountId) {
@@ -646,7 +660,7 @@ app.post('/api/login/:platform/verify', async (req, res) => {
   res.status(r.ok ? 200 : 400).json({ msg: r.msg });
 });
 
-app.post('/api/login/:platform/logout', async (req, res) => {
+router.post('/api/login/:platform/logout', async (req, res) => {
   const id = String(req.params.platform).toLowerCase();
   const accountId = bodyAccountId(req);
   if (!accountId) {
@@ -657,7 +671,7 @@ app.post('/api/login/:platform/logout', async (req, res) => {
   res.status(r.ok ? 200 : 400).json({ msg: r.msg });
 });
 
-app.post('/api/login/:platform/delete', async (req, res) => {
+router.post('/api/login/:platform/delete', async (req, res) => {
   const id = String(req.params.platform).toLowerCase();
   const accountId = bodyAccountId(req);
   if (!accountId) {
@@ -668,7 +682,7 @@ app.post('/api/login/:platform/delete', async (req, res) => {
   res.status(r.ok ? 200 : 400).json({ msg: r.msg });
 });
 
-app.post('/api/login/:platform/alias', async (req, res) => {  const id = String(req.params.platform).toLowerCase();
+router.post('/api/login/:platform/alias', async (req, res) => {  const id = String(req.params.platform).toLowerCase();
   const accountId = bodyAccountId(req);
   const b = (req.body ?? {}) as Record<string, unknown>;
   const alias = typeof b.alias === 'string' ? b.alias.trim().slice(0, 30) : '';
@@ -682,7 +696,7 @@ app.post('/api/login/:platform/alias', async (req, res) => {  const id = String(
 
 // 打开某账号的测试窗口（手动聊天，不跑自动化）
 // 启停账号：停用后不参与挑号
-app.post('/api/accounts/:platform/:accountId/toggle', async (req, res) => {
+router.post('/api/accounts/:platform/:accountId/toggle', async (req, res) => {
   const platform = String(req.params.platform).toLowerCase();
   const accountId = String(req.params.accountId);
   const want = (req.body ?? {}) as { enabled?: unknown };
@@ -694,7 +708,7 @@ app.post('/api/accounts/:platform/:accountId/toggle', async (req, res) => {
 });
 
 // 置顶 / 取消置顶：priority 越大越优先被挑中
-app.post('/api/accounts/:platform/:accountId/priority', async (req, res) => {
+router.post('/api/accounts/:platform/:accountId/priority', async (req, res) => {
   const platform = String(req.params.platform).toLowerCase();
   const accountId = String(req.params.accountId);
   const b = (req.body ?? {}) as { priority?: unknown };
@@ -703,7 +717,7 @@ app.post('/api/accounts/:platform/:accountId/priority', async (req, res) => {
   res.status(r.ok ? 200 : 400).json({ msg: r.msg, priority });
 });
 
-app.post('/api/login/:platform/test', (req, res) => {
+router.post('/api/login/:platform/test', (req, res) => {
   const id = String(req.params.platform).toLowerCase();
   if (!(id in LOGIN_DRIVERS)) {
     res.status(404).json({ msg: `未注册的登录平台：${id}` });
@@ -720,7 +734,7 @@ app.post('/api/login/:platform/test', (req, res) => {
 });
 
 // 关闭某账号的测试窗口
-app.post('/api/login/:platform/test-close', (req, res) => {
+router.post('/api/login/:platform/test-close', (req, res) => {
   const id = String(req.params.platform).toLowerCase();
   const accountId = bodyAccountId(req);
   if (!accountId) {
@@ -742,5 +756,7 @@ export async function startServer(): Promise<void> {
     const recycled = await releaseStaleLeases(config.nodeId);
     console.log(`[db] 连接正常 (${config.db.host}:${config.db.port}/${config.db.database})${recycled ? `，回收脏占用 ${recycled} 条` : ''}`);
   }
+  if (config.basePath) app.use(config.basePath, router);
+  else app.use(router);
   app.listen(PORT);
 }

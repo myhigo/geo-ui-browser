@@ -74,6 +74,8 @@ export interface AppConfig {
   db: DbConfig;
   /** API 端口 */
   port: number;
+  /** 挂载前缀：单域名多服务时由 nginx 用前缀区分（如 /geoui）。留空 = 根路径部署；路由与前端链接都会拼上 */
+  basePath: string;
   /** 单次采集超时（毫秒） */
   timeoutMs: number;
   /** 对方服务地址（拉词/回推） */
@@ -112,8 +114,32 @@ export interface AppConfig {
   };
 }
 
+/** 归一化挂载前缀：确保有且只有一个前导斜杠、无尾斜杠；空值返回 ''（根部署） */
+function normalizeBasePath(v?: string): string {
+  if (!v) return '';
+  let p = v.trim();
+  if (!p.startsWith('/')) p = '/' + p;
+  if (p.length > 1 && p.endsWith('/')) p = p.slice(0, -1);
+  return p;
+}
+
+/**
+ * noVNC 页面默认地址（经 nginx 同源反代时）。
+ * websockify 只在根路径提供服务，nginx 需「剥离前缀」转给容器 6080；
+ * 而 noVNC 的 WebSocket 默认连 /websockify（页面所在子路径），子路径部署时必须用
+ * ?path= 显式指定为 <前缀>/novnc/websockify，否则 WS 握手 404 → 登录窗口黑屏。
+ * 直连 6080（无 nginx）时请显式设 GEO_NOVNC_URL=http://host:6080/vnc.html?...（path 用默认）。
+ */
+function defaultNovncUrl(base: string): string {
+  const sub = base ? `${base.replace(/^\//, '')}/novnc/websockify` : 'novnc/websockify';
+  return `${base}/novnc/vnc.html?autoconnect=1&resize=scale&path=${sub}`;
+}
+
+const basePath = normalizeBasePath(env('GEO_BASE_PATH'));
+
 export const config: AppConfig = {
   nodeId: env('GEO_NODE_ID') ?? 'default',
+  basePath,
   storage: env('GEO_STORAGE') === 'file' ? 'file' : 'mysql',
   db: {
     host: env('DB_HOST') ?? '',
@@ -132,7 +158,7 @@ export const config: AppConfig = {
   dataRoot: env('GEO_DATA_ROOT') ?? '.',
   chromePath: env('GEO_CHROME_PATH'),
   useSystemChrome: bool('GEO_USE_SYSTEM_CHROME', false),
-  novncUrl: env('GEO_NOVNC_URL') ?? '',
+  novncUrl: env('GEO_NOVNC_URL') ?? defaultNovncUrl(basePath),
   testOutDir: env('GEO_TEST_OUT_DIR') ?? '',
   shot: {
     format: (env('GEO_SHOT_FORMAT') === 'jpeg' ? 'jpeg' : env('GEO_SHOT_FORMAT') === 'png' ? 'png' : 'webp') as
@@ -166,6 +192,7 @@ export function describeConfig(): string {
   const bits = [
     `node=${config.nodeId}`,
     `storage=${config.storage}`,
+    `basePath=${config.basePath || '/'}`,
     `port=${config.port}`,
     `artifactMode=${config.artifactMode}`,
     `headless=${config.headless}`,

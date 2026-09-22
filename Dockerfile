@@ -51,6 +51,7 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 VOLUME ["/data/geo"]
 EXPOSE 8787 6080
 
+# /healthz 固定在根路径、不随 GEO_BASE_PATH 移动（server.ts 里挂在 app 而非前缀 router），改前缀无需改这里
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:8787/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 

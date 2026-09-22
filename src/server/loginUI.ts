@@ -67,6 +67,8 @@ var CUR = null, POLL = null, SA_LAST = '', TESTPOLL = null;
 // 已构建面板的结构标识："<平台>|<有无登录窗口>"。用于避免轮询时整块重建
 var PANEL_KEY = null;
 var NOVNC_URL = ${JSON.stringify(config.novncUrl)};
+var BASE = ${JSON.stringify(config.basePath)};
+function api(p){ return (BASE || '') + p; }
 var ST = { none:{t:'未登录',c:'#c9cdd4'}, waiting:{t:'登录中',c:'#ff7d00'}, active:{t:'已登录',c:'#00b42a'}, cooling:{t:'冷却中',c:'#ff7d00'}, failed:{t:'不可用',c:'#f53f3f'} };
 function $(s){ return document.querySelector(s); }
 function toast(m){ var t=$('#toast'); t.textContent=m; t.classList.add('show'); setTimeout(function(){ t.classList.remove('show'); }, 2400); }
@@ -82,7 +84,7 @@ function render(){
   if(CUR==='__pull'){ renderPull(); return; }
   if(CUR==='__sources'){ renderSources(); return; }
   if(!CUR) return;
-  fetch('/api/login/platforms').then(function(r){ return r.json(); }).then(function(d){
+    fetch(api('/api/login/platforms')).then(function(r){ return r.json(); }).then(function(d){
     var p = (d.platforms||[]).filter(function(x){ return x.platformId===CUR; })[0];
     if(!p) return;
     menu(d.platforms||[]);
@@ -163,7 +165,7 @@ function render(){
 // 测试窗口按钮：按后端真实状态回显「测试 / 关闭测试」，点击走 test / test-close 接口。
 // key = platformId/accountId；后端是权威来源（用户手动关窗也会同步）。
 function syncTestButtons(){
-  fetch('/api/login/test/sessions').then(function(r){ return r.json(); }).then(function(d){
+  fetch(api('/api/login/test/sessions')).then(function(r){ return r.json(); }).then(function(d){
     var set = {}; (d.sessions||[]).forEach(function(s){ set[s]=true; });
     Array.prototype.forEach.call(document.querySelectorAll('[data-testbtn]'), function(btn){
       var key = btn.getAttribute('data-testbtn');
@@ -171,7 +173,7 @@ function syncTestButtons(){
       btn.textContent = open ? '关闭测试' : '测试';
       btn.onclick = function(){
         var parts = key.split('/'); var platform = parts[0]; var accountId = parts.slice(1).join('/');
-        fetch('/api/login/'+platform+'/'+(open?'test-close':'test'), { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({accountId: accountId}) })
+        fetch(api('/api/login/'+platform+'/'+(open?'test-close':'test')), { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({accountId: accountId}) })
           .then(function(r){ return r.json().then(function(j){ return {ok:r.ok, j:j}; }); })
           .then(function(o){ toast((o.j&&o.j.msg)||'已提交'); syncTestButtons(); })
           .catch(function(e){ toast('请求失败：'+e.message); });
@@ -199,7 +201,7 @@ function renderSources(){
     + '<label style="font-size:13px;color:#4e5969;"><input type="checkbox" id="sa-headed" checked> 开启浏览器</label></div>'
     + '<div id="sa-status" class="meta" style="margin-top:12px;">加载状态…</div></div>'
     + '<div id="sa-history"></div>';
-  fetch('/api/platforms').then(function(r){ return r.json(); }).then(function(d){
+  fetch(api('/api/platforms')).then(function(r){ return r.json(); }).then(function(d){
     var box=$('#sa-platforms'); if(!box) return;
     box.innerHTML = (d.platforms||[]).map(function(p){
       return '<label style="margin-right:16px;"><input type="checkbox" class="sa-plat" value="'+esc(p.platformId)+'"> '+esc(p.label)+' · '+esc(p.modelId)+'</label>';
@@ -218,7 +220,7 @@ function renderSources(){
     if($('#sa-headed').checked) payload.headed = true;
     var mEl = document.querySelector('input[name="sa-mode"]:checked');
     payload.mode = mEl ? mEl.value : 'serial';
-    fetch('/api/source-analysis/run', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(payload) })
+    fetch(api('/api/source-analysis/run'), { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(payload) })
       .then(function(r){ return r.json().catch(function(){ return {msg:'响应解析失败'}; }); })
       .then(function(j){ toast((j&&j.msg)||'已提交'); SA_LAST=''; saTick(); });
   };
@@ -227,7 +229,7 @@ function renderSources(){
   POLL = setInterval(saTick, 3000);
 }
 function saTick(){
-  fetch('/api/source-analysis/status').then(function(r){ return r.json(); }).then(function(s){
+  fetch(api('/api/source-analysis/status')).then(function(r){ return r.json(); }).then(function(s){
     var el=$('#sa-status'); if(!el) return;
     if(!s || !s.taskId){ el.innerHTML='<span style="color:#86909c;">尚未运行过信源分析</span>'; return; }
     var modeTxt = s.mode === 'parallel' ? '（并行）' : '（串行）';
@@ -250,7 +252,7 @@ function saTick(){
 }
 function saHistory(){
   var box=$('#sa-history'); if(!box) return;
-  fetch('/api/source-analysis/tasks').then(function(r){ return r.json(); }).then(function(d){
+  fetch(api('/api/source-analysis/tasks')).then(function(r){ return r.json(); }).then(function(d){
     var tasks=d.tasks||[]; if(!tasks.length){ box.innerHTML=''; return; }
     box.innerHTML = '<h2 style="margin-top:18px;">历史任务</h2><div class="acc">'
       + tasks.slice(0,20).map(function(t){
@@ -265,7 +267,7 @@ function saHistory(){
     Array.prototype.forEach.call(box.querySelectorAll('.sa-task'), function(el){
       el.onclick = function(){
         var id = el.getAttribute('data-open');
-        fetch('/api/source-analysis/open', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ taskId: id }) })
+        fetch(api('/api/source-analysis/open'), { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ taskId: id }) })
           .then(function(r){ return r.json().catch(function(){ return {}; }); })
           .then(function(j){ toast(j.dir ? ('已在文件管理器打开：'+j.dir) : (j.msg||'已尝试打开')); });
       };
@@ -309,7 +311,7 @@ function renderPull(){
     var s1 = $('#pull-start').value.trim(); if(s1) payload.startTime = s1;
     var s2 = $('#pull-end').value.trim(); if(s2) payload.endTime = s2;
     if($('#pull-headed').checked) payload.headed = true;
-    fetch('/api/pull/run', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(payload) })
+    fetch(api('/api/pull/run'), { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(payload) })
       .then(function(r){ return r.json().catch(function(){ return {msg:'响应解析失败'}; }); })
       .then(function(j){ toast((j&&j.msg)||'已提交'); pullStatusTick(); });
   };
@@ -318,7 +320,7 @@ function renderPull(){
   POLL = setInterval(pullStatusTick, 3000);
 }
 function pullStatusTick(){
-  fetch('/api/pull/status').then(function(r){ return r.json(); }).then(function(s){
+  fetch(api('/api/pull/status')).then(function(r){ return r.json(); }).then(function(s){
     var el = $('#pull-status'); if(!el) return;
     if(!s || (!s.running && !s.startedAt)){ el.innerHTML = '<span style="color:#86909c;">尚未运行过任何 pull 轮次</span>'; return; }
     el.innerHTML = '状态：<b>'+(s.running?'<span style="color:#ff7d00;">运行中</span>':'已结束')+'</b>'
@@ -331,8 +333,8 @@ function pullStatusTick(){
 function post(kind, accountId, extra){
   if(kind!=='start' && !accountId){ toast('缺少账号'); return; }
   var url = (kind==='toggle'||kind==='priority')
-    ? '/api/accounts/'+CUR+'/'+accountId+'/'+kind
-    : '/api/login/'+CUR+'/'+kind;
+    ? api('/api/accounts/'+CUR+'/'+accountId+'/'+kind)
+    : api('/api/login/'+CUR+'/'+kind);
   var body = { accountId: accountId||undefined };
   if(extra) for(var k in extra) body[k] = extra[k];
   fetch(url, { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(body) })
@@ -364,7 +366,7 @@ document.addEventListener('click', function(ev){
   if(kind==='alias'){
     var alias = prompt('账号备注（用于区分账号，如：主号-尾号1234）');
     if(alias===null || !alias.trim()) return;
-    fetch('/api/login/'+CUR+'/alias', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({accountId:acc, alias:alias.trim()}) })
+    fetch(api('/api/login/'+CUR+'/alias'), { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({accountId:acc, alias:alias.trim()}) })
       .then(function(r){ return r.json(); }).then(function(j){ toast((j&&j.msg)||'已更新'); render(); })
       .catch(function(e){ toast('请求失败：'+e.message); });
     return;
@@ -378,7 +380,7 @@ document.addEventListener('click', function(ev){
   }
   post(kind, acc);
 });
-fetch('/api/login/platforms').then(function(r){ return r.json(); }).then(function(d){
+fetch(api('/api/login/platforms')).then(function(r){ return r.json(); }).then(function(d){
   var ps = d.platforms||[];
   CUR = ps.length ? ps[0].platformId : '__pull';
   menu(ps); render();
