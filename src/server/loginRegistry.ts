@@ -343,6 +343,27 @@ function launchOpts(): Parameters<typeof chromium.launchPersistentContext>[1] {
   return o;
 }
 
+/** launchPersistentContext 容错包装：profile 残留 Chromium 锁（浏览器被 kill/容器重启后
+ *  SingletonLock/Socket/Cookie 未清除）会让 Chrome 误以为目录被占用而立即退出，表现为
+ *  「测试/登录窗口打不开、noVNC 黑屏」。启动失败时自动清锁重试一次。 */
+async function launchPersistentRetry(
+  dir: string,
+  opts: Parameters<typeof chromium.launchPersistentContext>[1]
+): Promise<BrowserContext> {
+  try {
+    return await chromium.launchPersistentContext(dir, opts);
+  } catch (e) {
+    try {
+      for (const f of ['SingletonLock', 'SingletonSocket', 'SingletonCookie']) {
+        fs.rmSync(path.join(dir, f), { force: true });
+      }
+      return await chromium.launchPersistentContext(dir, opts);
+    } catch (e2) {
+      throw e2;
+    }
+  }
+}
+
 /** 抓取账号昵称：①驱动自带 fetchMarker（页面无昵称元素时走接口）②markerSelector。
  *  fetchMarker 首次为空会等 2s 重试一次（登录刚完成时 token 可能还没落盘）。
  *  两者都未配置或都取空 → 返回空串，UI 统一显示「--」。任何平台都不做启发式兜底，取不到就是 --。 */
@@ -388,7 +409,7 @@ async function openProbe(
 ): Promise<{ ok: boolean; loginRequired?: boolean; marker?: string; error?: string }> {
   let context: BrowserContext;
   try {
-    context = await chromium.launchPersistentContext(dir, { ...launchOpts(), headless: true });
+    context = await launchPersistentRetry(dir, { ...launchOpts(), headless: true });
   } catch (e) {
     return { ok: false, error: `打开会话失败：${(e as Error).message}` };
   }
@@ -528,7 +549,7 @@ export async function startLogin(
   const task = (async () => {
     let context: BrowserContext;
     try {
-      context = await chromium.launchPersistentContext(acc.dir, launchOpts());
+      context = await launchPersistentRetry(acc.dir, launchOpts());
     } catch (e) {
       await accountRepo().patch(platformId, acc.id, { status: 'failed', note: `打开登录窗口失败：${(e as Error).message}` });
       return;
@@ -777,6 +798,10 @@ export async function closeTestAccount(
   if (!ctx) return { ok: false, msg: `账号 ${accountId} 没有打开的测试窗口` };
   testSessions.delete(key);
   inFlight.delete(accountId);
-  await ctx.close().catch(() => {});
+  // 浏览器可能已被 kill（崩溃/残留），close() 可能长时间挂起 → 最多等 8s，宁可放进程稍后回收
+  await Promise.race([
+    ctx.close().catch(() => {}),
+    new Promise((r) => setTimeout(r, 8000)),
+  ]);
   return { ok: true, msg: `已关闭 ${accountId} 的测试窗口` };
 }

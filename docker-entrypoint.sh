@@ -3,6 +3,11 @@
 # 三者同容器共享 DISPLAY=:99，比拆多容器更简单可靠。
 set -e
 
+# 上次异常退出（容器重启/浏览器被 kill）会残留 Chromium profile 锁（Singleton*），
+# 不清掉会导致之后测试/登录窗口打不开（noVNC 黑屏）。启动时统一清理。
+echo "[entrypoint] 清理残留的 Chromium profile 锁 ..."
+find /data/geo/.profiles -maxdepth 2 -name 'Singleton*' -delete 2>/dev/null || true
+
 echo "[entrypoint] 启动 Xvfb :99 ..."
 rm -f /tmp/.X99-lock
 Xvfb :99 -screen 0 1600x1000x24 -nolisten tcp &
