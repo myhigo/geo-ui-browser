@@ -47,6 +47,7 @@ docker compose --env-file "${ENV_FILE}" up -d
 echo
 echo "== 完成 =="
 base_path="$(grep -E '^GEO_BASE_PATH=' "${ENV_FILE}" | head -1 | cut -d= -f2- | tr -d '\r')"
-echo "  管理台：http://127.0.0.1:8787${base_path:-}/admin"
-# echo "  健康检查：http://127.0.0.1:8787/healthz"
+echo "  本机访问：http://127.0.0.1:18787${base_path:-}/admin"
+echo "  局域网访问：把 127.0.0.1 换成这台电脑的局域网 IP（如 http://192.168.1.5:18787${base_path:-}/admin）"
+echo "  健康检查：http://127.0.0.1:18787/healthz"
 echo "  停止服务：bash stop.sh（Windows 双击「停止服务.bat」）"

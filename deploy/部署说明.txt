@@ -16,7 +16,15 @@ geo-ui-browser 部署包说明
    第一次运行会自动拉取镜像（约 1-2GB，视网速需要几分钟），之后秒起。
 
 【怎么确认成功了】
-- 浏览器打开 http://localhost:8787/geoui/admin   （管理台）
+- 本机浏览器打开 http://localhost:18787/geoui/admin   （管理台）
+
+【局域网其他人访问】
+- 服务已绑定 0.0.0.0，同一局域网（同一 WiFi/交换机）的其他电脑，
+  用 http://<这台电脑的局域网IP>:18787/geoui/admin 访问（把 <...> 换成实际 IP，如 192.168.1.5）。
+- 查本机局域网 IP：macOS 终端运行  ipconfig getifaddr en0 ；Windows 运行  ipconfig（看 IPv4 地址）。
+- 连不上时检查：① 两台电脑在同一网段；② macOS 防火墙放行 Docker 的入站连接
+  （系统设置 → 网络 → 防火墙 → 允许 Docker 入站），Windows 检查防火墙是否拦截。
+- 注意：管理台无登录口令，开放到局域网后同网段电脑均可访问，请勿把端口暴露到公网。
 
 【常用操作】
 - 停止服务：
