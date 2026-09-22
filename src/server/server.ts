@@ -1,7 +1,9 @@
 import express from 'express';
 import fs from 'fs';
 import path from 'path';
+import http from 'http';
 import { exec } from 'child_process';
+import httpProxy from 'http-proxy';
 import { runDiagnostic } from '../diagnostics/run.js';
 import { SourceInfo } from '../types.js';
 import { PLATFORMS } from '../platforms/index.js';
@@ -338,6 +340,23 @@ const app = express();
 const router = express.Router();
 app.use(express.json({ limit: '1mb' }));
 
+// ---- noVNC 内置代理：管理台一个端口（8787）即可用 noVNC ----
+// 无 nginx 直连时，admin 页 iframe 的 noVNC URL 是相对本服务的 {basePath}/novnc/...，
+// 必须由本服务代理到容器内 websockify(6080)：HTTP 静态资源 + WebSocket 握手都转，
+// 否则 iframe 404 黑屏。nginx 前缀场景下 /novnc/* 已被 nginx 先行接管，本代理自然不生效。
+const NOVNC_TARGET = { host: '127.0.0.1', port: 6080 };
+const novncProxy = httpProxy.createProxyServer({ target: NOVNC_TARGET, ws: true });
+novncProxy.on('error', (err, _req, res) => {
+  try {
+    const r = res as unknown as { writeHead?: (s: number) => unknown; end?: () => void };
+    if (r?.writeHead) r.writeHead(502);
+    if (r?.end) r.end();
+  } catch {
+    /* WebSocket 场景：socket 已被销毁，忽略 */
+  }
+  console.error('[novnc] 代理 6080 失败：', err.message);
+});
+
 // 健康检查（容器 HEALTHCHECK 用）：正在关闭时返回 503，便于编排层摘流量。
 // ⚠️ 必须挂在 app（根路径）上、不随 GEO_BASE_PATH 加前缀：
 // Dockerfile HEALTHCHECK 固定请求容器内 127.0.0.1:8787/healthz（不经 nginx），
@@ -598,6 +617,12 @@ router.get('/admin', (_req, res) => {
   res.type('html').send(adminPageHtml());
 });
 
+// noVNC 静态资源（vnc.html / app.js / core/*.js 等）→ websockify 的 6080 web 根
+// 挂载在 router 下（带前缀时自动带 /geoui 前缀），请求进入时 req.url 已相对 /novnc
+router.use('/novnc', (req, res) => {
+  novncProxy.web(req, res, { prependPath: false });
+});
+
 router.get('/api/login/platforms', async (_req, res) => {
   const busy = loginBusy();
   const testing = new Set(listTestSessions());
@@ -758,5 +783,17 @@ export async function startServer(): Promise<void> {
   }
   if (config.basePath) app.use(config.basePath, router);
   else app.use(router);
-  app.listen(PORT);
+  const server = app.listen(PORT);
+  // noVNC WebSocket 握手：noVNC 客户端用 path=... 参数发 WS 到 {basePath}/novnc/websockify。
+  // express 不处理 upgrade，必须挂在原生 http server 上；转发时把路径重写为 websockify 的 /websockify。
+  const novncWsPath = `${config.basePath}/novnc/websockify`;
+  server.on('upgrade', (req, socket, head) => {
+    const p = (req.url ?? '').split('?')[0];
+    if (p !== novncWsPath) {
+      socket.destroy();
+      return;
+    }
+    req.url = '/websockify';
+    novncProxy.ws(req, socket, head, { prependPath: false });
+  });
 }

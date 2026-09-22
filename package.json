@@ -13,12 +13,14 @@
   },
   "dependencies": {
     "express": "^5.2.1",
+    "http-proxy": "^1.18.1",
     "mysql2": "^3.24.4",
     "playwright": "1.62.1",
     "sharp": "^0.33.5"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",
+    "@types/http-proxy": "^1.17.17",
     "@types/node": "^22.7.4",
     "tsx": "^4.19.1",
     "typescript": "^5.6.2"
