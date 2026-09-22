@@ -64,6 +64,8 @@ export function adminPageHtml(): string {
 <div id="toast" class="toast"></div>
 <script>
 var CUR = null, POLL = null, SA_LAST = '', TESTPOLL = null;
+// 收录检测勾「开启浏览器」时弹出的 noVNC 标签页引用 + 任务结束标记（结束后自动关标签页）
+var PULL_WIN = null, PULL_ENDED = false;
 // 已构建面板的结构标识："<平台>|<有无登录窗口>"。用于避免轮询时整块重建
 var PANEL_KEY = null;
 var NOVNC_URL = ${JSON.stringify(config.novncUrl)};
@@ -324,7 +326,14 @@ function renderPull(){
     if (plats.length) payload.platforms = plats;
     var s1 = $('#pull-start').value.trim(); if(s1) payload.startTime = s1;
     var s2 = $('#pull-end').value.trim(); if(s2) payload.endTime = s2;
-    if($('#pull-headed').checked) payload.headed = true;
+    var headed = $('#pull-headed').checked;
+    if(headed) payload.headed = true;
+    // 勾了「开启浏览器」→ 同步弹出 noVNC 标签页看容器里的浏览器画面（同步调用避免被浏览器拦截）；任务结束自动关闭（见 pullStatusTick）
+    if(headed){
+      try { PULL_WIN = window.open(NOVNC_URL, '_blank'); }
+      catch(e) { PULL_WIN = null; }
+      if(!PULL_WIN) toast('弹窗被浏览器拦截，可手动打开 '+NOVNC_URL);
+    }
     fetch(api('/api/pull/run'), { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(payload) })
       .then(function(r){ return r.json().catch(function(){ return {msg:'响应解析失败'}; }); })
       .then(function(j){ toast((j&&j.msg)||'已提交'); pullStatusTick(); });
@@ -337,6 +346,12 @@ function pullStatusTick(){
   fetch(api('/api/pull/status')).then(function(r){ return r.json(); }).then(function(s){
     var el = $('#pull-status'); if(!el) return;
     if(!s || (!s.running && !s.startedAt)){ el.innerHTML = '<span style="color:#86909c;">尚未运行过任何 pull 轮次</span>'; return; }
+    // 任务结束（从运行中变为结束）→ 自动关闭「开启浏览器」时弹出的 noVNC 标签页
+    if(!s.running){
+      if(!PULL_ENDED){ PULL_ENDED = true; if(PULL_WIN && !PULL_WIN.closed){ try { PULL_WIN.close(); } catch(e) {} } PULL_WIN = null; }
+    } else {
+      PULL_ENDED = false;
+    }
     el.innerHTML = '状态：<b>'+(s.running?'<span style="color:#ff7d00;">运行中</span>':'已结束')+'</b>'
       + ' ｜ 页数：<b>'+s.pages+'</b> ｜ 拉取：<b>'+s.fetched+'</b> ｜ 成功：<b>'+s.success+'</b> ｜ 失败：<b>'+s.failed+'</b> ｜ 回推失败：<b>'+s.reportFailed+'</b>'
       + (s.host ? ' ｜ 目标：<b>'+esc(s.host)+'</b>' : '')
