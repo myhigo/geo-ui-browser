@@ -9,7 +9,7 @@ geo-ui-browser 部署包说明
 ========================
 
 1. 把整个 deploy 文件解压到任意目录（路径不要带中文和空格，例如 D:\geo 或 /opt/geo）
-2. 调整 geo-ui-env，配置环境变量
+2. 调整 geo-ui-env，配置环境变量（至少填上 DB_PASSWORD=数据库密码）
 3. 启动：
    - Windows：双击「启动服务.bat」
    - Linux / macOS：在文件夹里打开终端，运行  bash deploy.sh
