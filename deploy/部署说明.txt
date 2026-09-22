@@ -1,30 +1,24 @@
 geo-ui-browser 部署包说明
 =======================
+【电脑环境】
+- Docker：
+  Windows 装 Docker Desktop（装完打开并保持运行）；
+  Linux 装 docker + compose 插件
+- 数据库：可访问的 MySQL
 
-【你要做的只有 3 步】
-1. 把整个 deploy 文件夹（或打成 zip）通过微信发到目标电脑，
-   解压到任意目录（路径不要带中文和空格，例如 D:\geo 或 /opt/geo）
-2. 用记事本打开 geo-ui-env，找到 DB_PASSWORD= 一行，在后面填上数据库密码，保存
+========================
+
+1. 把整个 deploy 文件解压到任意目录（路径不要带中文和空格，例如 D:\geo 或 /opt/geo）
+2. 调整 geo-ui-env，配置环境变量
 3. 启动：
    - Windows：双击「启动服务.bat」
    - Linux / macOS：在文件夹里打开终端，运行  bash deploy.sh
    第一次运行会自动拉取镜像（约 1-2GB，视网速需要几分钟），之后秒起。
 
-【目标电脑需要提前装好】
-- Docker：Windows 装 Docker Desktop（装完打开并保持运行）；
-  Linux 装 docker + compose 插件
-- 数据库：可访问的 MySQL（建表 SQL 在项目 sql/schema.sql，通常由运维提前建好）
-- 不需要装 Node / 代码，程序全在镜像里
-
 【怎么确认成功了】
 - 浏览器打开 http://localhost:8787/geoui/admin   （管理台）
-- 或打开 http://localhost:8787/healthz，看到 {"ok":true,...} 即正常
 
 【常用操作】
-- 停止服务：Windows 双击「停止服务.bat」；Linux 运行  bash stop.sh
-- 升级：拿到新版部署包后，把新版 geo-ui-env 填上同样的密码，重新启动即可
-- 去掉路径前缀 / 改端口：编辑 geo-ui-env 里的 GEO_BASE_PATH（留空=根路径）
-
-【注意】
-- geo-ui-env 里有数据库密码，不要外传、不要截图发群
-- 管理台默认只在本机可访问；要对内网/公网提供服务时需配 nginx（规则见项目 README）
+- 停止服务：
+   Windows 双击「停止服务.bat」；
+   Linux 运行  bash stop.sh
