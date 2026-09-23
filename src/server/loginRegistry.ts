@@ -502,6 +502,7 @@ export async function startLogin(
       if (v.ok) {
         await accountRepo().patch(platformId, acc.id, {
           status: 'active',
+          note: undefined,
           createdAt: acc.createdAt ?? Date.now(),
           lastUsedAt: Date.now(),
           todayQueries: 0,
