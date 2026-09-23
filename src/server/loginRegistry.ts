@@ -25,13 +25,6 @@ export interface PlatformLoginDriver {
   loginRequired: true;
   loginWaitMs?: number;
   hint?: string;
-  /** 登录态页面中唯一命中「账号昵称」文本的 selector（2026-09-03 豆包侦察定标） */
-  markerSelector?: string;
-  /**
-   * 昵称抓不到的兜底钩子：平台页面上压根不显示昵称时（如 DeepSeek），由驱动自己
-   * 从页面上下文取账号标识（调站内接口 / 读 storage）。优先于 markerSelector。
-   */
-  fetchMarker?(page: Page): Promise<string>;
 }
 
 export const LOGIN_DRIVERS: Record<string, PlatformLoginDriver> = {
@@ -41,8 +34,6 @@ export const LOGIN_DRIVERS: Record<string, PlatformLoginDriver> = {
     loginRequired: true,
     loginWaitMs: 6 * 60 * 1000,
     hint: '请在自动打开的浏览器窗口完成登录（抖音扫码 / 手机验证码均可），完成后回到本页点击「我已登录完成，验证」。窗口标题对应左侧所选账号，别登错号。',
-    // 侦察定标：侧边栏左下角「头像+昵称」，昵称叶子 SPAN 的稳定标识（text-dbx-text-primary 为豆包主题类）
-    markerSelector: 'span[class*="text-dbx-text-primary"][class*="text-ellipsis"]',
   },
   deepseek: {
     platformId: 'deepseek',
@@ -50,34 +41,6 @@ export const LOGIN_DRIVERS: Record<string, PlatformLoginDriver> = {
     loginRequired: true,
     loginWaitMs: 6 * 60 * 1000,
     hint: '请在自动打开的浏览器窗口完成登录（手机验证码 / 微信扫码均可），完成后回到本页点击「我已登录完成，验证」。窗口标题对应左侧所选账号，别登错号。',
-    // ⚠️ DeepSeek 页面上没有昵称元素（侦察 2026-09-04：首页侧栏只有历史对话，左下/右上均无账号区，
-    //    /settings 会重定向回首页）→ 只能走站内接口：localStorage.userToken → /api/v0/users/current，
-    //    返回 data.biz_data.id_profile.name（微信昵称，如 ssdyy），回退 mobile_number（脱敏手机号）。
-    fetchMarker: async (page) =>
-      page.evaluate(async () => {
-        try {
-          const raw = localStorage.getItem('userToken') || '';
-          let token = raw;
-          try {
-            const o = JSON.parse(raw) as { value?: unknown };
-            token = typeof o?.value === 'string' ? o.value : raw;
-          } catch {
-            /* 不是 JSON 就当纯字符串用 */
-          }
-          if (!token) return '';
-          const res = await fetch('/api/v0/users/current', {
-            headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
-          });
-          const j = (await res.json()) as {
-            data?: { biz_data?: { id_profile?: { name?: string }; mobile_number?: string } };
-          };
-          const u = j?.data?.biz_data;
-          if (!u) return '';
-          return (u.id_profile?.name || '').trim() || (u.mobile_number || '').trim() || '';
-        } catch {
-          return '';
-        }
-      }),
   },
   qwen: {
     platformId: 'qwen',
@@ -85,10 +48,6 @@ export const LOGIN_DRIVERS: Record<string, PlatformLoginDriver> = {
     loginRequired: true,
     loginWaitMs: 6 * 60 * 1000,
     hint: '请在自动打开的浏览器窗口完成登录（千问扫码 / 手机验证码均可），完成后回到本页点击「我已登录完成，验证」。窗口标题对应左侧所选账号，别登错号。',
-    // 侦察定标(2026-09-07 登录页落盘)：侧边栏底部「头像+昵称」按钮内的昵称 span 即账号昵称。
-    // 结构：<button aria-haspopup="menu"><img.rounded-full><span><span class="truncate text-sm font-600 leading-6">昵称</span></span></button>
-    // 注：window._USER_.showName 为空，昵称只存在于该 DOM 文本，故走 markerSelector（非接口）。
-    markerSelector: 'button[aria-haspopup="menu"] span[class*="truncate"]',
   },
   wenxiaoyan: {
     platformId: 'wenxiaoyan',
@@ -96,10 +55,6 @@ export const LOGIN_DRIVERS: Record<string, PlatformLoginDriver> = {
     loginRequired: true,
     loginWaitMs: 6 * 60 * 1000,
     hint: '请在自动打开的浏览器窗口完成登录（百度账号扫码 / 手机号均可），完成后回到本页点击「我已登录完成，验证」。窗口标题对应左侧所选账号，别登错号。',
-    // 昵称：已登录后侧边栏用户信息区 `<span class="cos-line-clamp-1">HiXiangHiGo</span>`（位于
-    //   `.chat-aside-user-info` 内，紧挨真实头像 img.chat-aside-avatar-content）。该 span 是叶子节点，
-    //   直接取 textContent 即得昵称。未配 selector 时启发式兜底会误抓侧边栏「添加桌面快捷方式」img 的 alt。
-    markerSelector: '.chat-aside-user-info .cos-line-clamp-1',
   },
   hunyuan: {
     platformId: 'hunyuan',
@@ -107,10 +62,6 @@ export const LOGIN_DRIVERS: Record<string, PlatformLoginDriver> = {
     loginRequired: true,
     loginWaitMs: 6 * 60 * 1000,
     hint: '请在自动打开的浏览器窗口完成登录（微信扫码 / 手机号均可），完成后回到本页点击「我已登录完成，验证」。窗口标题对应左侧所选账号，别登错号。',
-    // 昵称选择器（2026-09-07 落盘 login-yuanbao-*.html 实测定标）：
-    //   登录后顶栏头像旁 <div class="nick-info-container"><p class="nick-info-name">昵称</p></div>，
-    //   叶子节点 <p> 直取 textContent 即得昵称（如 ssdyy）。未配前启发式兜底误抓下载推广图 alt。
-    markerSelector: '.nick-info-name',
   },
 };
 
@@ -373,50 +324,12 @@ async function launchPersistentRetry(
   }
 }
 
-/** 抓取账号昵称：①驱动自带 fetchMarker（页面无昵称元素时走接口）②markerSelector。
- *  fetchMarker 首次为空会等 2s 重试一次（登录刚完成时 token 可能还没落盘）。
- *  两者都未配置或都取空 → 返回空串，UI 统一显示「--」。任何平台都不做启发式兜底，取不到就是 --。 */
-export async function extractAccountMarker(page: Page, driver: PlatformLoginDriver): Promise<string> {
-  if (driver.fetchMarker) {
-    try {
-      let m = (await driver.fetchMarker(page)) || '';
-      if (!m) {
-        await page.waitForTimeout(2000).catch(() => {});
-        m = (await driver.fetchMarker(page)) || '';
-      }
-      if (m) return m;
-    } catch {
-      /* 接口失败 → 继续走 selector 兜底 */
-    }
-  }
-  const sel = driver.markerSelector;
-  if (sel) {
-    try {
-      return await page.evaluate((s) => {
-        for (const el of Array.from(document.querySelectorAll(s))) {
-          if (el.children.length === 0) {
-            const t = (el.textContent || '').trim();
-            if (t && t.length <= 40) return t;
-          }
-        }
-        return '';
-      }, sel);
-    } catch {
-      return '';
-    }
-  }
-  // 无 fetchMarker 且无 markerSelector（或两者都取空）→ 返回空串，由 UI 统一显示「--」。
-  // ⚠️ 不再做任何启发式兜底（如抓取 img[alt]），曾误抓元宝下载推广图 alt="下载元宝电脑版…"。
-  //    所有平台一致：取不到昵称就是取不到，必须显示 --，绝不乱猜。
-  return '';
-}
-
-/** 一次性打开目录探测：登录墙？昵称？proxy = 账号绑定代理（探测必须走同一出口，否则登录态判定失真） */
+/** 一次性打开目录探测：登录墙？proxy = 账号绑定代理（探测必须走同一出口，否则登录态判定失真） */
 async function openProbe(
   platformId: string,
   dir: string,
   proxy?: { server: string; username?: string; password?: string }
-): Promise<{ ok: boolean; loginRequired?: boolean; nickname?: string; error?: string }> {
+): Promise<{ ok: boolean; loginRequired?: boolean; error?: string }> {
   let context: BrowserContext;
   try {
     context = await launchPersistentRetry(dir, { ...launchOpts(proxy), headless: true });
@@ -498,10 +411,9 @@ async function openProbe(
       } catch {
         /* ignore */
       }
-      return { ok: true, loginRequired, nickname: '' };
+      return { ok: true, loginRequired };
     }
-    const nickname = await extractAccountMarker(page, LOGIN_DRIVERS[platformId]);
-    return { ok: true, loginRequired, nickname };
+    return { ok: true, loginRequired };
   } catch (e) {
     return { ok: false, error: `登录态探测异常：${(e as Error).message}` };
   } finally {
@@ -509,25 +421,16 @@ async function openProbe(
   }
 }
 
-/** 登录后校验：未撞墙且可提问 → ok；同时带回页面昵称（nickname） */
+/** 登录后校验：无头重开同一目录，未撞登录墙且可提问 → ok（不抽昵称；2026-09-23 按用户要求简化） */
 async function verifySession(
   platformId: string,
   dir: string,
   proxy?: { server: string; username?: string; password?: string }
-): Promise<{ ok: boolean; note?: string; nickname?: string }> {
+): Promise<{ ok: boolean; note?: string }> {
   const p = await openProbe(platformId, dir, proxy);
   if (!p.ok) return { ok: false, note: p.error };
   if (p.loginRequired) return { ok: false, note: '登录态校验未通过：仍检测到登录墙/无输入框' };
-  // ⚠️ 无登录墙平台（如文心：匿名也可用、首页有输入框）checkLogin 恒 false，上面拦不住"磁盘无登录态"。
-  //   对配了昵称选择器/接口的平台，进一步要求无头重开能抽到账号昵称：抽不到 = 磁盘没有真实登录会话
-  //   （2026-09-07 文心实测：BDUSS 是 session cookie 未落盘 → 重开未登录 → 昵称元素不存在 → 此检查能抓到）。
-  const driver = LOGIN_DRIVERS[platformId];
-  if (driver && (driver.markerSelector || driver.fetchMarker)) {
-    if (!p.nickname) {
-      return { ok: false, note: '登录态校验未通过：磁盘上无真实登录会话（重开后页面未显示账号昵称）' };
-    }
-  }
-  return { ok: true, nickname: p.nickname };
+  return { ok: true };
 }
 
 /** 发起某平台某账号（或新账号）的登录：有头窗口等人工。幂等：一次只允许一个登录会话 */
@@ -592,32 +495,20 @@ export async function startLogin(
       return;
     }
     if (done) {
-      // ⚠️ active 必须以「磁盘登录态可还原」为准（verifySession = 无头重开同一目录读 cookie/localStorage），
-      // 不能只信窗口 DOM 昵称。曾踩坑（文心 2026-09-07）：可见窗口显示已登录、confirmLogin 抽到昵称
-      // HiXiangHiGo → 直接标 active；但 BDUSS 从未落盘 .profiles/wenxiaoyan-1 → execute 打开该目录仍是未登录，
-      // 整轮匿名问答（用户报"没用登录信息"）。故统一走 verifySession 验证磁盘，昵称仅以窗口抽的优先。
+      // active 以「磁盘登录态可还原」为准（verifySession = 无头重开同一目录验证登录墙/输入框）。
+      // 不再抽昵称（2026-09-23 按用户要求简化）；文心等无登录墙平台的"磁盘未持久化"兜底
+      // 由 confirmLogin 里的会话级 cookie 转持久（重种 365 天）承担。
       const v = await verifySession(platformId, acc.dir, await proxyOf(acc));
-      const domMarker = pendingNickname !== null ? pendingNickname : null;
-      pendingNickname = null;
       if (v.ok) {
-        const nickname = (domMarker ?? v.nickname ?? '').trim();
-        // 昵称串号护栏：本次昵称与历史不一致（且历史有值）→ 明确警示
-        const changed = !!(acc.nickname && nickname && acc.nickname !== nickname);
         await accountRepo().patch(platformId, acc.id, {
           status: 'active',
-          note: changed
-            ? `昵称变化：${acc.nickname} → ${nickname}（确认是否登成了别的号）`
-            : nickname
-              ? undefined
-              : '未抓到昵称（页面结构可能变化），可在备注中手动标注',
-          nickname: nickname || acc.nickname,
           createdAt: acc.createdAt ?? Date.now(),
           lastUsedAt: Date.now(),
           todayQueries: 0,
           consecutiveFails: 0,
         });
       } else {
-        // 磁盘还原失败 → 登录态未真正持久化，明确标 failed，绝不凭窗口 DOM 昵称标 active
+        // 磁盘还原失败 → 登录态未真正持久化，明确标 failed，绝不凭窗口画面标 active
         await accountRepo().patch(platformId, acc.id, {
           status: 'failed',
           note: `登录态未持久化到磁盘（窗口内已登录但无头重开仍是登录墙）：${v.note ?? ''}`,
@@ -632,17 +523,13 @@ export async function startLogin(
   return { ok: true, msg: `登录窗口已打开（${acc.id}），请在窗口内完成登录后回到管理页点击「我已登录完成，验证」`, accountId: acc.id };
 }
 
-// 用户在可见登录窗口点「验证」时，已在窗口上抽好的昵称。
-// 避免在 startLogin 的异步收尾里用 openProbe 无头 context 重开目录——文心等平台 SPA 从 cookie
-// 水合登录态慢，无头重开会落在未登录首页，导致昵称抽取失败（如抓到「添加桌面快捷方式」）。
-let pendingNickname: string | null = null;
-
+// 用户在可见登录窗口点「验证」→ confirmLogin 确认，随后 startLogin 异步收尾 verifySession 校验磁盘。
 export async function confirmLogin(platformId: string, accountId: string): Promise<{ ok: boolean; msg: string }> {
   if (!activeLogin || activeLogin.platformId !== platformId || activeLogin.accountId !== accountId) {
     return { ok: false, msg: '当前没有进行中的该账号登录会话（可能已结束或超时）' };
   }
-  // 直接在用户刚登录完成的可见窗口上抽昵称 + 落盘：用户看到的就是这个窗口，页面确定已登录。
-  let nickname = '';
+  // 直接在用户刚登录完成的可见窗口上操作：等 SPA 水合登录态 + 诊断落盘 + 会话级 cookie 转持久。
+  // 不再抽昵称（2026-09-23 按用户要求简化）。
   try {
     const pg = activeLogin.context.pages()[0];
     if (pg) {
@@ -685,7 +572,6 @@ export async function confirmLogin(platformId: string, accountId: string): Promi
       } catch {
         /* 诊断落盘失败不影响登录 */
       }
-      nickname = await extractAccountMarker(pg, LOGIN_DRIVERS[platformId]);
       // 🍪 会话级登录 cookie 转持久（2026-09-07 文心微信登录实测：BDUSS/STOKEN/PTOKEN 全为
       // expires=-1 的 session cookie）。session cookie 在 context.close()（浏览器关闭）后被 Chrome
       // 丢弃 → 磁盘目录永无登录态 → 后续 execute 打开该目录永远未登录（"登录了却没用上"）。
@@ -717,9 +603,8 @@ export async function confirmLogin(platformId: string, accountId: string): Promi
       }
     }
   } catch {
-    nickname = '';
+    /* 窗口操作失败不影响确认 */
   }
-  pendingNickname = nickname;
   activeLogin.confirm(true);
   return { ok: true, msg: '收到确认，正在校验登录态…' };
 }

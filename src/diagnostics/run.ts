@@ -14,8 +14,6 @@ import path from 'path';
 import { resolvePlatform, PlatformDef } from '../platforms/index.js';
 import { probeElements } from './elementProbe.js';
 import { DiagnosticResult, ElementDiagnosisItem, SourceInfo, ScreenshotMode } from '../types.js';
-// 登录制平台判据与昵称抽取（供"无墙平台真登录态探测"用；loginRegistry 不反向依赖 run.ts，无循环）
-import { LOGIN_DRIVERS, extractAccountMarker } from '../server/loginRegistry.js';
 import { config } from '../config/index.js';
 import { fingerprint, Fingerprint } from '../config/fingerprint.js';
 import { trackContext, untrackContext, trackBrowser, untrackBrowser } from '../runtime/shutdown.js';
@@ -322,25 +320,9 @@ export async function runDiagnostic(
 
     try {
       loginRequired = await adapter.checkLogin();
-
-      // 登录制平台（userDataDir 存在即登录账号目录）：无登录墙平台（如文心，匿名也可用、首页有输入框）
-      // 的 checkLogin 恒 false，无法区分「真登录」与「磁盘无登录态」。用账号昵称探测兜底：
-      // 抽不到昵称 = 磁盘无有效登录会话（登录 cookie 未落盘/已失效，如 session cookie 关窗即丢）
-      // → 视为需重新登录（loginRequired=true），由 execute 判 401 失败并提示重登，绝不默默匿名跑冒充成功。
-      const loginDrv = LOGIN_DRIVERS[def.id];
-      if (opts.userDataDir && loginDrv && (loginDrv.markerSelector || loginDrv.fetchMarker)) {
-        const nick = await extractAccountMarker(page, loginDrv).catch(() => '');
-        if (nick) {
-          // 抽到账号昵称 = 磁盘登录态有效且已水合 → 确认已登录，覆盖 checkLogin 仅凭选择器
-          // 可能误判的「需登录」（如个别平台首屏输入框尚未渲染完即被探测）。
-          loginRequired = false;
-          console.log(`👤 已抽到账号昵称「${nick}」，确认登录态有效`);
-        } else if (loginRequired) {
-          // checkLogin 已判「需登录」且抽不到昵称 → 确认登录墙/磁盘登录态失效，本轮按需重新登录处理
-          console.log('⚠️ 打开登录账号目录后未抽到账号昵称：磁盘登录态未持久化或已失效，本轮按「需重新登录」处理');
-        }
-        // 其余（checkLogin 判可对话、但抽不到昵称）：信任 checkLogin（有可对话输入框即视为已登录），不翻转
-      }
+      // 不再用账号昵称探测兜底（2026-09-23 按用户要求简化，不抽取昵称）。
+      // 注意取舍：文心等无登录墙平台的 checkLogin 恒 false，无法区分「真登录」与「磁盘无登录态」；
+      // 该场景由 confirmLogin 里的会话级 cookie 转持久兜底。
 
       // 未登录且允许等待 → 停在可见窗口等人工登录（浏览器不关，用户直接操作即可）。
       // 轮询「是否已出现输入框」作为登录成功的判定，与平台登录方式（短信/扫码/第三方）无关。

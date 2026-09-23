@@ -1,6 +1,8 @@
 // 平台登录管理页（多账号版，极简无外部依赖）。入口 GET /admin。
 // 每个账号一张卡：状态/账号号/备注 + 昵称·今日查询·最近使用（两列网格）+ 代理选择 + 启停/备注/测试/删除。
-// 配置了 GEO_NOVNC_URL 时，有账号处于「登录中」会内嵌 noVNC 窗口供人工扫码 / 输入验证码。
+// 配置了 GEO_NOVNC_URL 时，登录窗口 / 测试窗口 / 收录检测均弹出独立 noVNC 标签页供人工操作
+// （2026-09-23：登录窗口从内嵌 iframe 改为弹标签页——iframe 内 noVNC 画布拿不到键盘焦点，
+//  表现为"点击管用、输入手机号没反应"）。
 import { config } from '../config/index.js';
 
 export function adminPageHtml(): string {
@@ -139,10 +141,9 @@ function renderAccounts(){
         }).join('');
       return '<select class="proxy-sel" data-acc="'+esc(a.id)+'">'+opts+'</select>';
     };
-    // 是否需要内嵌 noVNC iframe：仅登录窗口（waiting）嵌在页面里；
-    // 测试窗口改为弹出独立窗口（见 syncTestButtons），不嵌 iframe。
+    // 是否有账号在登录中（waiting）：登录窗口已改为弹出独立标签页（见 post() 的 start 分支），
+    // 页面不再内嵌 iframe；有 waiting 账号时 3s 轮询刷新卡片状态。
     var needLogin = p.accounts.some(function(a){ return a.status==='waiting'; });
-    var needVnc = !!(NOVNC_URL && needLogin);
 
     // —— 账号卡片（每次刷新）——
     var accHtml;
@@ -162,7 +163,6 @@ function renderAccounts(){
       // 备注单独一行并带标签，否则混在标题行里看不出是备注
       accHtml += '<div class="acc-info">'
         + '<span class="k">备注</span><b>'+esc(a.remark||'-')+'</b>'
-        + '<span class="k">昵称</span><b>'+esc(a.nickname||'-')+'</b>'
         + '<span class="k">今日查询</span><b>'+(a.todayQueries==null?0:a.todayQueries)+'</b>'
         + '<span class="k">最近使用</span><b>'+(a.lastUsedAt?fmtTime(a.lastUsedAt):'-')+'</b>'
         + (a.consecutiveFails?'<span class="k">连续失败</span><b>'+a.consecutiveFails+'</b>':'')
@@ -196,27 +196,14 @@ function renderAccounts(){
       });
       accHtml += '</div>';
     }
-    // —— 外壳（含 noVNC iframe 和文本输入框）——
-    // 这两个元素是「有状态」的：若每 3 秒的轮询都整块重建，会同时造成
-    //   1) noVNC 反复断连重连 → 窗口一直是黑屏
-    //   2) 输入框被重建 → 刚填的手机号/验证码被清空、焦点丢失（表现为"输入不进去"）
-    // 因此只在结构变化（切平台 / 登录窗口出现或消失 / 面板被其他视图占用过）时重建外壳，
-    // 轮询时只刷新 #acc-area 里的账号卡片。
-    var key = 'acc|' + ACC_PLATFORM + '|' + (needVnc ? 'vnc' : 'novnc');
+    // —— 外壳（账号列表区，无 iframe）——
+    // 登录窗口已改为弹出独立 noVNC 标签页（见 post() start 分支），页面不再有内嵌 iframe /
+    // 文本注入框，轮询只刷新 #acc-area 里的账号卡片；外壳仅在切平台/面板被占用过时重建。
+    var key = 'acc|' + ACC_PLATFORM;
     if(PANEL_KEY !== key || !document.getElementById('acc-area')){
       var shell = '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;"><h2>账号管理</h2><button class="primary" data-kind="start">＋ 添加账号登录</button></div>'
         + '<div style="margin:10px 0;display:flex;gap:8px;flex-wrap:wrap;">' + plats.map(function(x){ return '<button class="plat-tab'+(x.platformId===ACC_PLATFORM?' on':'')+'" data-plat="'+x.platformId+'">'+x.label+'</button>'; }).join('') + '</div>';
       if(p.hint) shell += '<div class="hint">'+esc(p.hint)+'</div>';
-      if(needVnc){
-        shell += '<div class="acc" style="margin-bottom:14px;">'
-          + '<div class="meta" style="margin-bottom:8px;">登录窗口：请在下方窗口内完成扫码 / 输入验证码，完成后点账号卡上的「验证登录」。</div>'
-          + '<iframe id="novnc" src="'+esc(NOVNC_URL)+'" style="width:100%;height:760px;border:1px solid #e5e6eb;border-radius:8px;background:#000;"></iframe>'
-          + '<div style="display:flex;gap:8px;margin-top:10px;align-items:center;">'
-          + '<input id="vnc-text" class="inp" style="flex:1;" placeholder="手机号 / 验证码：填入后点「发送到窗口」">'
-          + '<button id="vnc-send">发送到窗口</button></div>'
-          + '<div class="meta">若浏览器未提供剪贴板接口，会自动改为复制到剪贴板，你在窗口内 Ctrl+V 粘贴即可。</div>'
-          + '</div>';
-      }
       shell += '<div id="acc-area"></div>';
       $('#panel').innerHTML = shell;
       PANEL_KEY = key;
@@ -225,7 +212,7 @@ function renderAccounts(){
     if(acc) acc.innerHTML = accHtml;
 
     if(POLL) clearInterval(POLL); POLL=null;
-    if(needVnc) POLL=setInterval(renderAccounts,3000);
+    if(needLogin) POLL=setInterval(renderAccounts,3000);
     syncTestButtons();
     if(TESTPOLL) clearInterval(TESTPOLL);
     TESTPOLL = setInterval(syncTestButtons, 4000);
@@ -480,6 +467,18 @@ function pullStatusTick(){
       + (s.lastError ? '<div class="note">上次错误：'+esc(s.lastError)+'</div>' : '');
   }).catch(function(){});
 }
+// 登录窗口标签页引用（登录会话同时只能一个，单 key 足够）
+function openLoginWin(){
+  if(WIN_REFS['__login'] && !WIN_REFS['__login'].closed) return; // 已开着就不重复弹
+  try { var w = window.open(NOVNC_URL, '_blank'); if(w) WIN_REFS['__login'] = w; }
+  catch(e) { WIN_REFS['__login'] = null; }
+  if(!WIN_REFS['__login']) toast('弹窗被拦截，可手动打开 '+NOVNC_URL);
+}
+function closeLoginWin(){
+  var w = WIN_REFS['__login'];
+  if(w && !w.closed){ try { w.close(); } catch(e) { /* 已被用户手动关过等场景，忽略 */ } }
+  delete WIN_REFS['__login'];
+}
 // 事件委托：账号卡与顶部按钮统一走 data-kind / data-acc（避免内联 onclick 引号转义问题）
 function post(kind, accountId, extra){
   if(kind!=='start' && !accountId){ toast('缺少账号'); return; }
@@ -489,27 +488,21 @@ function post(kind, accountId, extra){
     : api('/api/login/'+plat+'/'+kind);
   var body = { accountId: accountId||undefined };
   if(extra) for(var k in extra) body[k] = extra[k];
+  // 登录（start）：同步弹出独立 noVNC 标签页（与测试窗口一致），避免内嵌 iframe 键盘焦点问题
+  if(kind==='start') openLoginWin();
   fetch(url, { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(body) })
-    .then(function(r){ return r.json().catch(function(){ return {msg:'响应解析失败'}; }); })
-    .then(function(j){ toast((j&&j.msg)||'已提交'); render(); })
-    .catch(function(e){ toast('请求失败：'+e.message); });
-}
-// 文本注入：优先走 noVNC 的 rfb.clipboardPasteFrom，取不到就降级到剪贴板
-function sendToVnc(){
-  var t = $('#vnc-text'); if(!t || !t.value.trim()){ toast('请先填写要发送的内容'); return; }
-  var text = t.value.trim(), sent = false;
-  try {
-    var w = document.getElementById('novnc') && document.getElementById('novnc').contentWindow;
-    if(w && w.rfb && typeof w.rfb.clipboardPasteFrom === 'function'){ w.rfb.clipboardPasteFrom(text); sent = true; }
-  } catch(e) { sent = false; }
-  if(sent){ toast('已发送到登录窗口'); return; }
-  if(navigator.clipboard && navigator.clipboard.writeText){
-    navigator.clipboard.writeText(text).then(function(){ toast('已复制到剪贴板，请在窗口内 Ctrl+V 粘贴'); },
-      function(){ toast('复制失败，请手动输入'); });
-  } else { toast('无法自动发送，请手动输入'); }
+    .then(function(r){ return r.json().then(function(j){ return {ok:r.ok, j:j}; }); })
+    .then(function(o){
+      toast((o.j&&o.j.msg)||'已提交');
+      // start 被拒（如已有登录会话/无可用登录槽）→ 关掉刚弹的标签页，避免空窗口残留
+      if(kind==='start' && !o.ok) closeLoginWin();
+      // 验证成功 → 登录完成，自动关闭 noVNC 标签页
+      if(kind==='verify' && o.ok) closeLoginWin();
+      render();
+    })
+    .catch(function(e){ toast('请求失败：'+e.message); if(kind==='start') closeLoginWin(); });
 }
 document.addEventListener('click', function(ev){
-  if(ev.target && ev.target.closest && ev.target.closest('#vnc-send')){ sendToVnc(); return; }
   // 账号管理页顶部平台 tab（2026-09-22）
   var pt = ev.target && ev.target.closest ? ev.target.closest('button.plat-tab') : null;
   if(pt){ ACC_PLATFORM = pt.getAttribute('data-plat'); render(); return; }
