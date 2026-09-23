@@ -514,7 +514,7 @@ export async function startLogin(
         // 磁盘还原失败 → 登录态未真正持久化，明确标 failed，绝不凭窗口画面标 active
         await accountRepo().patch(platformId, acc.id, {
           status: 'failed',
-          note: `登录态未持久化到磁盘：${v.note ?? ''}`,
+          note: '登录态未持久化，请重新登录',
         });
       }
     } else {
