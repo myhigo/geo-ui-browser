@@ -32,7 +32,13 @@ if [ -z "${db_pw}" ]; then
   exit 1
 fi
 
-# 4) 镜像就绪（没有则拉取）
+# 4) 已在运行则退出（幂等，防止重复执行）
+if [ -n "$(docker compose --env-file "${ENV_FILE}" ps -q 2>/dev/null || true)" ]; then
+  echo "[提示] 服务已在运行。如需重启/更新：先运行 bash stop.sh，再运行本脚本。"
+  exit 0
+fi
+
+# 5) 镜像就绪（没有则拉取）
 image="$(grep -E '^IMAGE=' "${ENV_FILE}" | head -1 | cut -d= -f2- | tr -d '\r')"
 image="${image:-geo-ui-browser:latest}"
 if ! docker image inspect "${image}" >/dev/null 2>&1; then
@@ -40,14 +46,25 @@ if ! docker image inspect "${image}" >/dev/null 2>&1; then
   docker pull "${image}"
 fi
 
-# 5) 启动
+# 6) 启动
 echo "[deploy] 启动服务 ..."
 docker compose --env-file "${ENV_FILE}" up -d
 
+# 7) 等服务完全就绪（healthz 可访问）再显示完成
+base_path="$(grep -E '^GEO_BASE_PATH=' "${ENV_FILE}" | head -1 | cut -d= -f2- | tr -d '\r')"
+port="$(docker compose --env-file "${ENV_FILE}" port geo 8787 2>/dev/null | sed -n 's/.*:\([0-9]*\)$/\1/p' | head -1)"
+port="${port:-18787}"
+ok=""
+for i in $(seq 1 60); do
+  if curl -fsS "http://127.0.0.1:${port}/healthz" >/dev/null 2>&1; then ok=1; break; fi
+  sleep 2
+done
+if [ -z "${ok}" ]; then
+  echo "[错误] 服务在 120 秒内未就绪，请查看日志：docker compose --env-file ${ENV_FILE} logs"
+  exit 1
+fi
+
 echo
 echo "== 完成 =="
-base_path="$(grep -E '^GEO_BASE_PATH=' "${ENV_FILE}" | head -1 | cut -d= -f2- | tr -d '\r')"
-echo "  本机访问：http://127.0.0.1:18787${base_path:-}/admin"
-echo "  局域网访问：把 127.0.0.1 换成这台电脑的局域网 IP（如 http://192.168.1.5:18787${base_path:-}/admin）"
-echo "  健康检查：http://127.0.0.1:18787/healthz"
+echo "  本机访问：http://127.0.0.1:${port}${base_path:-}/admin"
 echo "  停止服务：bash stop.sh（Windows 双击「停止服务.bat」）"

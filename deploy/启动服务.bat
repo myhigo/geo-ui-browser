@@ -28,25 +28,52 @@ if not errorlevel 1 (
   exit /b 1
 )
 
-rem 3) 读取镜像名（默认 geo-ui-browser:latest）
+rem 3) 已在运行则退出（幂等，防止重复执行）
+set "RUN="
+for /f "usebackq" %%i in (`docker compose --env-file geo-ui-env ps -q`) do set "RUN=1"
+if defined RUN (
+  echo [提示] 服务已在运行。如需重启/更新：先双击「停止服务.bat」，再运行本脚本。
+  pause
+  exit /b 0
+)
+
+rem 4) 读取镜像名（默认 geo-ui-browser:latest）
 set "IMG=geo-ui-browser:latest"
 for /f "usebackq tokens=2 delims==" %%i in (`findstr /B "IMAGE=" geo-ui-env`) do set "IMG=%%i"
 if "%IMG%"=="" set "IMG=geo-ui-browser:latest"
 
-rem 4) 镜像就绪（没有则拉取）
+rem 5) 镜像就绪（没有则拉取）
 docker image inspect %IMG% >nul 2>nul
 if errorlevel 1 (
   echo [deploy] 第一次运行，拉取镜像 %IMG%（约 1-2GB，视网速需要几分钟）...
   docker pull %IMG%
 )
 
-rem 5) 启动
+rem 6) 读取 base path
+set "BASE_PATH="
+for /f "usebackq tokens=2 delims==" %%i in (`findstr /B "GEO_BASE_PATH=" geo-ui-env`) do set "BASE_PATH=%%i"
+
+rem 7) 启动
 echo [deploy] 启动服务 ...
 docker compose --env-file geo-ui-env up -d
 
+rem 8) 等服务完全就绪（healthz 可访问）再显示完成
+set /a n=0
+:waithealth
+set /a n+=1
+curl -fsS http://127.0.0.1:18787/healthz >nul 2>nul
+if not errorlevel 1 goto ready
+if %n% geq 60 (
+  echo [错误] 服务在 120 秒内未就绪，请查看：docker compose --env-file geo-ui-env logs
+  pause
+  exit /b 1
+)
+ping -n 3 127.0.0.1 >nul
+goto waithealth
+:ready
+
 echo.
 echo == 完成 ==
-echo   管理台：http://localhost:8787/geoui/admin
-echo   健康检查：http://localhost:8787/healthz
+echo   本机访问：http://127.0.0.1:18787%BASE_PATH%/admin
 echo   停止服务：双击「停止服务.bat」
 pause
