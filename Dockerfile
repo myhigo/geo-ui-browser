@@ -22,6 +22,8 @@ RUN if [ "$USE_CN_MIRROR" = "true" ]; then \
     fi
 
 # 中文字体（截图否则全是方块）+ 虚拟屏 + VNC（容器内人工登录用）+ 时区
+# openbox：轻量窗口管理器。多浏览器窗口同屏（收录验证/测试多账号同时开）时，
+# 无 WM 则窗口重叠且无法 raise/切换；openbox 让点击窗口任意处即可切换。
 RUN apt-get update && apt-get install -y --no-install-recommends \
       fonts-noto-cjk \
       tzdata \
@@ -29,7 +31,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       x11vnc \
       websockify \
       novnc \
+      openbox \
  && rm -rf /var/lib/apt/lists/*
+
+# openbox 配置：Client 点击 = Raise + Focus（点击聊天窗口任意处即切换，无需精确点标题栏）
+COPY deploy/openbox-rc.xml /root/.config/openbox/rc.xml
 
 # noVNC 数字小键盘修复（2026-09-23）：KP_* keysym 在远端 Xvfb NumLock 关闭时被解释为
 # Home/End 等导航键（"右侧数字区输入没反应"）→ patch 为发送标准数字 keysym，与 NumLock 解耦。

@@ -496,6 +496,8 @@ function post(kind, accountId, extra){
       if(kind==='start' && !o.ok) closeLoginWin();
       // 验证成功 → 登录完成，自动关闭 noVNC 标签页
       if(kind==='verify' && o.ok) closeLoginWin();
+      // 取消登录成功 → 一并关闭登录 noVNC 标签页（避免黑屏 iframe 残留）
+      if(kind==='cancel' && o.ok) closeLoginWin();
       render();
     })
     .catch(function(e){ toast('请求失败：'+e.message); if(kind==='start') closeLoginWin(); });

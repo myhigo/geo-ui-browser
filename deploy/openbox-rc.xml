@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- geo-ui-browser 容器窗口管理器配置（openbox）：
+     同一 Xvfb 屏上多个浏览器窗口（如豆包/DeepSeek 同时开）时，
+     点击窗口任意处即可 raise + focus 切换，避免窗口重叠后无法切换。 -->
+<openbox_config xmlns="http://openbox.org/3.4/rc">
+  <mouse>
+    <dragThreshold>1</dragThreshold>
+    <doubleClickTime>500</doubleClickTime>
+    <context name="Frame">
+      <mousebind button="A-Left" action="Move"/>
+      <mousebind button="A-Right" action="Resize"/>
+    </context>
+    <context name="Titlebar">
+      <mousebind button="Left" action="Raise"/>
+      <mousebind button="Left" action="Focus"/>
+    </context>
+    <context name="Client">
+      <mousebind button="Left" action="Raise"/>
+      <mousebind button="Left" action="Focus"/>
+    </context>
+  </mouse>
+</openbox_config>
