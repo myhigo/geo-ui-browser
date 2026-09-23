@@ -31,6 +31,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       novnc \
  && rm -rf /var/lib/apt/lists/*
 
+# noVNC 数字小键盘修复（2026-09-23）：KP_* keysym 在远端 Xvfb NumLock 关闭时被解释为
+# Home/End 等导航键（"右侧数字区输入没反应"）→ patch 为发送标准数字 keysym，与 NumLock 解耦。
+COPY deploy/patch-novnc-numpad.js /tmp/patch-novnc-numpad.js
+RUN node /tmp/patch-novnc-numpad.js && rm /tmp/patch-novnc-numpad.js
+
 WORKDIR /app
 
 COPY package*.json ./
