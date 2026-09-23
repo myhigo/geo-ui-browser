@@ -39,7 +39,7 @@ import {
 import { acquireIp, acquireAccountByIp, releaseAccountBusy, IpAllocation } from '../runtime/ipScheduler.js';
 import { adminPageHtml } from './loginUI.js';
 import { config, paths, describeConfig } from '../config/index.js';
-import { accountRepo, Account } from '../storage/accountRepo.js';
+import { accountRepo, Account, profileDirOf } from '../storage/accountRepo.js';
 import { proxyRepo, splitProxyHost } from '../storage/proxyRepo.js';
 import { pingDb, releaseStaleLeases } from '../db/pool.js';
 import { identityRepo } from '../storage/identityRepo.js';
@@ -820,6 +820,56 @@ router.delete('/api/proxies/:id', async (req, res) => {
 // 账号绑定 / 解绑代理 IP：绑定或换绑（含解绑）后账号必须重新登录（旧登录态归属旧出口，换出口即失效）
 // 2026-09-22：宿主机直连也是池内一行（127.0.0.1:0, protocol=direct），账号绑它即走宿主机出口；
 // 解绑（proxyId=null）= 不绑任何 IP，不参与词级调度。
+// 新增账号：先选代理 IP（可选）+ 备注，创建未登录账号；登录由卡片「登录」按钮发起
+router.post('/api/accounts/:platform', async (req, res) => {
+  const platform = String(req.params.platform).toLowerCase();
+  if (!LOGIN_DRIVERS[platform]) {
+    res.status(400).json({ msg: `未注册的登录平台：${platform}` });
+    return;
+  }
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  const rawProxyId = b.proxyId;
+  const proxyId = rawProxyId == null || rawProxyId === '' || Number(rawProxyId) === 0 ? null : Number(rawProxyId);
+  let ip: { host: string; port: number; protocol: string } | undefined;
+  if (proxyId !== null) {
+    if (!Number.isInteger(proxyId)) {
+      res.status(400).json({ msg: 'proxyId 无效' });
+      return;
+    }
+    const found = await proxyRepo().get(proxyId);
+    if (!found) {
+      res.status(404).json({ msg: '代理不存在' });
+      return;
+    }
+    if (found.enabled === false) {
+      res.status(400).json({ msg: '该代理已停用，请先在代理管理里启用' });
+      return;
+    }
+    ip = found;
+  }
+  const accounts = await accountRepo().list(platform);
+  let maxSeq = 0;
+  for (const a of accounts) {
+    const mm = /-(\d+)$/.exec(a.id);
+    if (mm) maxSeq = Math.max(maxSeq, Number(mm[1]));
+  }
+  const seq = maxSeq + 1;
+  const acc: Account = {
+    id: `${platform}-${seq}`,
+    dir: profileDirOf(platform, seq),
+    remark: typeof b.remark === 'string' && b.remark.trim() ? b.remark.trim() : `账号${seq}`,
+    status: 'none',
+    ...(ip ? { proxyId, proxyHost: ip.host, proxyPort: ip.port } : {}),
+    note: ip ? `已绑定代理 ${ip.host}:${ip.port}（${ip.protocol}）` : undefined,
+  };
+  await accountRepo().add(platform, acc);
+  res.status(200).json({
+    ok: true,
+    msg: `已添加账号 ${acc.id}${ip ? `，绑定代理 ${ip.host}:${ip.port}` : ''}，点卡片「登录」开始登录`,
+    accountId: acc.id,
+  });
+});
+
 router.post('/api/accounts/:platform/:accountId/proxy', async (req, res) => {
   const platform = String(req.params.platform).toLowerCase();
   const accountId = String(req.params.accountId);
