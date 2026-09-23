@@ -214,18 +214,18 @@ export class YuanbaoAdapter implements PlatformAdapter {
     // ① 只点一次发送钮（稳定选择器：#yuanbao-send-btn / a[aria-label="发送"]）
     const sendSel = this.selectors.sendButton.join(', ');
     await humanClick(this.page, sendSel);
-    if (await this.waitAnswerStarted(6000)) return; // 助手气泡出现=已发送，立即返回（不二次点）
+    if (await this.waitAnswerStarted(15000)) return; // 助手气泡出现=已发送，立即返回（不二次点）
 
     // ② 兜底：发送钮未生效时尝试一次 Enter（仅一次，不重复点钮，避免双发中断）
     await this.page.keyboard.press('Enter').catch(() => {});
-    if (await this.waitAnswerStarted(6000)) return;
+    if (await this.waitAnswerStarted(15000)) return;
 
     console.warn('⚠️ 元宝发送未能确认（未见助手回答气泡），请人工检查发送交互');
   }
 
   // 发送确认：等待助手气泡（.agent-chat__bubble--ai）出现即视为发送成功。
   // 区别于旧「输入框清空」判定——元宝发送后保持输入框文本，旧判定会误触发二次点击。
-  private async waitAnswerStarted(timeoutMs = 6000): Promise<boolean> {
+  private async waitAnswerStarted(timeoutMs = 15000): Promise<boolean> {
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
       const ok = await this.page

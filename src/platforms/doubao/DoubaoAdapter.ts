@@ -106,17 +106,26 @@ export class DoubaoAdapter implements PlatformAdapter {
 
     // 是否真的发出去：输入框是否已被清空（不再含原问题）
     const isSent = async (): Promise<boolean> => !(await enteredText()).includes(probe);
+    // 发送后轮询确认输入框清空（慢代理/带宽下页面清空有延迟），最多等 15s，避免一次性检查误报
+    const waitSent = async (): Promise<boolean> => {
+      const deadline = Date.now() + 15000;
+      for (;;) {
+        if (await isSent()) return true;
+        if (Date.now() >= deadline) return false;
+        await this.page.waitForTimeout(500);
+      }
+    };
 
     // 1) 优先 Enter（贴合用户习惯）。发送前随机停顿 500–1000ms（模拟真人检查后发送）
     await this.page.waitForTimeout(randWaitMs(DOUBAO_INPUT_PRE_ENTER));
     await this.page.keyboard.press('Enter');
-    if (await isSent()) return;
+    if (await waitSent()) return;
 
     // 2) 兜底：点输入区内圆钮
     await input.locator.click().catch(() => {});
     const send = await firstFound(this.page, this.selectors.sendButton);
     if (send) await send.locator.click().catch(() => {});
-    if (await isSent()) return;
+    if (await waitSent()) return;
 
     console.warn('⚠️ 发送未能确认（输入框仍含原问题），请人工检查发送交互');
   }
