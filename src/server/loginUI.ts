@@ -137,6 +137,7 @@ function renderAccounts(){
           // 与代理管理页保持一致：以 port===0 判直连，标签显示 IP 而非"宿主机"
           var isDirect = x.port===0;
           var label = isDirect ? esc(x.host)+'（直连）' : esc(x.host)+':'+x.port+'（'+x.protocol+'）';
+          if(x.note) label += ' '+esc(x.note);
           return '<option value="'+x.id+'"'+(cur===x.id?' selected':'')+'>'+label+'</option>';
         }).join('');
       return '<select class="proxy-sel" data-acc="'+esc(a.id)+'">'+opts+'</select>';
@@ -218,6 +219,8 @@ function renderAccounts(){
 }
 // 点「测试」弹出的 noVNC 标签页引用（按 key 存，支持多账号同时开测试窗口）
 var WIN_REFS = {};
+// 代理管理：正在编辑的代理 id（null=无编辑态）
+var PX_EDITING = null;
 function syncTestButtons(){
   fetch(api('/api/login/test/sessions')).then(function(r){ return r.json(); }).then(function(d){
     var set = {}; (d.sessions||[]).forEach(function(s){ set[s]=true; });
@@ -286,12 +289,27 @@ function pxTick(){
     var box = $('#px-list'); if(!box) return;
     var list = d.proxies||[];
     if(!list.length){ box.innerHTML = '<div class="empty">还没有代理 IP（宿主机直连行会随服务启动自动出现）。</div>'; return; }
-    box.innerHTML = list.map(function(p){
+    // flex 网格：一行 2-3 个卡片；min-width 保证窄屏自动换行
+    box.innerHTML = '<div style="display:flex;flex-wrap:wrap;gap:10px;">' + list.map(function(p){
       // port=0 即直连（不设代理）。标题一律显示 IP，直连与否由后面的协议徽标（直连/http/socks5）区分
       var isDirect = p.port===0;
       var title = isDirect ? esc(p.host) : esc(p.host)+':'+p.port;
       var proto = p.protocol==='direct' ? '直连' : esc(p.protocol);
-      return '<div class="acc"><div class="acc-top">'
+      if(p.id===PX_EDITING){
+        // 编辑态：5 个字段 + 保存/取消（密码用 password 类型，esc 防 HTML 注入）
+        return '<div class="acc" style="width:calc(33.33% - 8px);min-width:280px;box-sizing:border-box;">'
+          + '<input id="pxe-host-'+p.id+'" class="inp" style="width:100%;box-sizing:border-box;" value="'+esc(p.host)+'">'
+          + '<div style="display:flex;gap:6px;margin-top:6px;">'
+          + '<input id="pxe-port-'+p.id+'" class="inp" style="width:64px;" value="'+p.port+'">'
+          + '<select id="pxe-proto-'+p.id+'" class="inp" style="width:88px;"><option value="http"'+(p.protocol==='http'?' selected':'')+'>http</option><option value="socks5"'+(p.protocol==='socks5'?' selected':'')+'>socks5</option></select>'
+          + '<input id="pxe-user-'+p.id+'" class="inp" style="flex:1;min-width:0;" placeholder="账号" value="'+esc(p.username||'')+'">'
+          + '<input id="pxe-pass-'+p.id+'" class="inp" style="flex:1;min-width:0;" type="password" placeholder="密码" value="'+esc(p.password||'')+'">'
+          + '</div>'
+          + '<input id="pxe-note-'+p.id+'" class="inp" style="width:100%;box-sizing:border-box;margin-top:6px;" placeholder="备注" value="'+esc(p.note||'')+'">'
+          + '<div class="btns"><button class="primary" data-px="'+p.id+'" data-pxact="save">保存</button><button data-px="'+p.id+'" data-pxact="cancel">取消</button></div>'
+          + '</div>';
+      }
+      return '<div class="acc" style="width:calc(33.33% - 8px);min-width:280px;box-sizing:border-box;"><div class="acc-top">'
         + '<span class="st-label" style="font-family:ui-monospace,monospace;">'+title+'</span>'
         + '<span class="meta">'+proto+'</span>'
         + (p.enabled===false?'<span class="meta" style="color:#f53f3f;">已停用</span>':'<span class="meta" style="color:#00b42a;">启用中</span>')
@@ -299,9 +317,10 @@ function pxTick(){
         + '<div class="meta">绑定账号：<b>'+p.accounts+'</b> ｜ 最近使用：<b>'+(p.lastUsedAt?new Date(p.lastUsedAt).toLocaleString():'从未使用')+'</b>'
         + (p.username?' ｜ 账号：<b>'+esc(p.username)+'</b>':'')
         + (isDirect?'':(p.note?' ｜ 备注：<b>'+esc(p.note)+'</b>':'')) + '</div>'
-        + '<div class="btns"><button data-px="'+p.id+'" data-pxact="toggle" data-en="'+(p.enabled?'1':'0')+'">'+(p.enabled?'停用':'启用')+'</button>'
+        + '<div class="btns"><button data-px="'+p.id+'" data-pxact="edit">编辑</button>'
+        + '<button data-px="'+p.id+'" data-pxact="toggle" data-en="'+(p.enabled?'1':'0')+'">'+(p.enabled?'停用':'启用')+'</button>'
         + '<button class="danger" data-px="'+p.id+'" data-pxact="del">删除</button></div></div>';
-    }).join('');
+    }).join('') + '</div>';
   }).catch(function(){ var b=$('#px-list'); if(b) b.innerHTML='<span class="empty">代理列表加载失败</span>'; });
 }
 // ---- 信源分析页：逐行输入关键词 → 全平台顺序采集 → 每个平台一个 JSON 文件（按引用次数降序） ----
@@ -511,11 +530,31 @@ document.addEventListener('click', function(ev){
   if(px){
     var pid = Number(px.getAttribute('data-px'));
     var act = px.getAttribute('data-pxact');
+    if(act==='edit'){ PX_EDITING=pid; pxTick(); return; }
+    if(act==='cancel'){ PX_EDITING=null; pxTick(); return; }
     if(act==='del' && !confirm('确认删除该代理 IP？已绑定账号时会拒绝删除，需先到账号管理解绑。')) return;
-    var opt = act==='del' ? { method:'DELETE' } : { method:'PATCH', headers:{'content-type':'application/json'}, body: JSON.stringify({ enabled: px.getAttribute('data-en')!=='1' }) };
+    var opt;
+    if(act==='save'){
+      var host = ($('#pxe-host-'+pid).value||'').trim();
+      var portRaw = ($('#pxe-port-'+pid).value||'').trim();
+      if(!host){ toast('请填 IP 或域名'); return; }
+      var port = Number(portRaw);
+      if(!Number.isInteger(port) || port < 0 || port > 65535){ toast('端口需为 0-65535 的整数（0=直连不代理）'); return; }
+      var body = { host: host, port: port, protocol: $('#pxe-proto-'+pid).value };
+      var u = ($('#pxe-user-'+pid).value||'').trim(); if(u) body.username = u;
+      var pw = $('#pxe-pass-'+pid).value||''; if(pw) body.password = pw;
+      var nt = ($('#pxe-note-'+pid).value||'').trim(); if(nt) body.note = nt;
+      opt = { method:'PATCH', headers:{'content-type':'application/json'}, body: JSON.stringify(body) };
+    } else {
+      opt = act==='del' ? { method:'DELETE' } : { method:'PATCH', headers:{'content-type':'application/json'}, body: JSON.stringify({ enabled: px.getAttribute('data-en')!=='1' }) };
+    }
     fetch(api('/api/proxies/'+pid), opt)
       .then(function(r){ return r.json().catch(function(){ return {msg:'响应解析失败'}; }); })
-      .then(function(j){ toast((j&&j.msg)||'已操作'); pxTick(); })
+      .then(function(j){
+        toast((j&&j.msg)||'已操作');
+        if(act==='save') PX_EDITING=null;
+        pxTick();
+      })
       .catch(function(e){ toast('请求失败：'+e.message); });
     return;
   }

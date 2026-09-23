@@ -739,11 +739,58 @@ router.patch('/api/proxies/:id', async (req, res) => {
   if (typeof b.username === 'string') patch.username = b.username.trim();
   if (typeof b.password === 'string') patch.password = b.password;
   if (typeof b.note === 'string') patch.note = b.note.trim();
+
+  // 出口字段（host/port/protocol）编辑：host 支持「IP:端口」或独立端口字段，校验与添加一致
+  let exitChanged = false;
+  if (typeof b.host === 'string' || typeof b.port === 'number' || typeof b.port === 'string' || typeof b.protocol === 'string') {
+    const cur = await proxyRepo().get(id);
+    if (!cur) {
+      res.status(404).json({ msg: '代理不存在' });
+      return;
+    }
+    const rawHost = typeof b.host === 'string' ? b.host.trim() : String(cur.host);
+    const parsed = splitProxyHost(rawHost);
+    const portFromBody =
+      typeof b.port === 'number'
+        ? b.port
+        : typeof b.port === 'string' && b.port.trim()
+          ? Number(b.port.trim())
+          : cur.port;
+    const port = portFromBody ?? parsed.port ?? cur.port;
+    const protocol =
+      port === 0
+        ? 'direct'
+        : b.protocol === 'socks5' || b.protocol === 'http'
+          ? b.protocol
+          : cur.protocol;
+    if (!parsed.host || !Number.isInteger(port) || port < 0 || port > 65535) {
+      res.status(400).json({ msg: 'IP 与端口无效：端口需为 0-65535 的整数（0=直连不代理）' });
+      return;
+    }
+    if (parsed.host !== cur.host || port !== cur.port || protocol !== cur.protocol) {
+      patch.host = parsed.host;
+      patch.port = port;
+      patch.protocol = protocol;
+      exitChanged = true;
+    }
+  }
+
   try {
     const p = await proxyRepo().patch(id, patch);
     if (!p) {
       res.status(404).json({ msg: '代理不存在' });
       return;
+    }
+    // 出口变更 → 绑定账号的登录态归属旧出口，提示重新登录
+    if (exitChanged) {
+      for (const pid of Object.keys(LOGIN_DRIVERS)) {
+        const accs = await accountRepo().list(pid).catch(() => [] as never[]);
+        for (const a of accs as Array<{ id: string; proxyId?: number | null }>) {
+          if (a.proxyId === id) {
+            await accountRepo().patch(pid, a.id, { note: '代理已变更，需重新登录' }).catch(() => {});
+          }
+        }
+      }
     }
     res.status(200).json({ ok: true, msg: '已更新' });
   } catch (e) {

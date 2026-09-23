@@ -97,7 +97,7 @@ export class FileProxyRepo implements ProxyRepo {
   async add(p: Omit<ProxyIp, 'id'>): Promise<ProxyIp> {
     const list = this.load();
     const nextId = list.reduce((m, x) => Math.max(m, x.id), 0) + 1;
-    const row: ProxyIp = { ...p, id: nextId, nodeId: config.nodeId, enabled: p.enabled ?? true, usedCount: 0 };
+    const row: ProxyIp = { ...p, id: nextId, nodeId: config.nodeId, enabled: p.enabled ?? false, usedCount: 0 };
     list.push(row);
     this.save(list);
     return row;
@@ -224,7 +224,7 @@ export class MysqlProxyRepo implements ProxyRepo {
         p.protocol,
         p.username ?? null,
         p.password ?? null,
-        p.enabled === false ? 0 : 1,
+        p.enabled === true ? 1 : 0,
         p.note ?? null,
       ]
     );

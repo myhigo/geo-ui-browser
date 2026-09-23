@@ -85,9 +85,14 @@ export async function acquireIp(timeoutMs = 5 * 60 * 1000): Promise<IpAllocation
   let waitLogged = false;
   for (;;) {
     const ips = await proxyRepo().list();
-    const free = ips.filter(
-      (p) => p.enabled !== false && !isBusy(`ip:${p.id}`)
-    );
+    // 过滤：启用 + 未被占用 + 该 IP 下必须有绑定账号（否则挑了也无账号可执行，白等）
+    const free: ProxyIp[] = [];
+    for (const p of ips) {
+      if (p.enabled === false || isBusy(`ip:${p.id}`)) continue;
+      const n = await proxyRepo().countAccountsByProxy(p.id).catch(() => 0);
+      if (n <= 0) continue;
+      free.push(p);
+    }
     if (free.length === 0) {
       if (Date.now() - t0 >= timeoutMs) return null;
       await sleep(2000);
