@@ -144,6 +144,7 @@ export class FileProxyRepo implements ProxyRepo {
       protocol: 'direct',
       enabled: true,
       usedCount: 0,
+      note: '不使用代理',
     });
     this.save(list);
   }
@@ -273,7 +274,7 @@ export class MysqlProxyRepo implements ProxyRepo {
     // INSERT IGNORE：uk_node_host_port 唯一键天然幂等（已存在（含已停用）不覆盖）
     await dbPool().query(
       `INSERT IGNORE INTO geo_ui_proxy_ip (node_id, host, port, protocol, username, password, enabled, note, used_count)
-       VALUES (?, ?, ?, 'direct', NULL, NULL, 1, NULL, 0)`,
+       VALUES (?, ?, ?, 'direct', NULL, NULL, 1, '不使用代理', 0)`,
       [config.nodeId, DIRECT_IP_HOST, DIRECT_IP_PORT]
     );
   }
