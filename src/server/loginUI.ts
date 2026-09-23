@@ -200,21 +200,7 @@ function renderAccounts(){
     // 文本注入框，轮询只刷新 #acc-area 里的账号卡片；外壳仅在切平台/面板被占用过时重建。
     var key = 'acc|' + ACC_PLATFORM;
     if(PANEL_KEY !== key || !document.getElementById('acc-area')){
-      // 新增账号表单（默认隐藏）：先选代理 IP + 备注 → 创建未登录账号，登录由卡片「登录」发起
-      var addOpts = '<option value="0">不绑代理</option>' + PROXIES.filter(function(x){ return x.enabled!==false; }).map(function(x){
-        var isDirect = x.port===0;
-        var lbl = isDirect ? esc(x.host)+'（直连）' : esc(x.host)+':'+x.port+'（'+x.protocol+'）';
-        if(x.note) lbl += ' '+esc(x.note);
-        return '<option value="'+x.id+'">'+lbl+'</option>';
-      }).join('');
       var shell = '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;"><h2>账号管理</h2><button class="primary" data-kind="acc-add">＋ 新增账号</button></div>'
-        + '<div id="acc-add-box" style="display:none;margin:10px 0;padding:10px;border:1px solid #e5e6eb;border-radius:8px;align-items:center;gap:8px;flex-wrap:wrap;">'
-        + '<span class="k">代理 IP</span>'
-        + '<select id="acc-add-proxy" class="inp" style="width:260px;">'+addOpts+'</select>'
-        + '<input id="acc-add-remark" class="inp" style="width:180px;" placeholder="备注（可选）">'
-        + '<button class="primary" data-kind="acc-add-do">确定</button>'
-        + '<button data-kind="acc-add-cancel">取消</button>'
-        + '</div>'
         + '<div style="margin:10px 0;display:flex;gap:8px;flex-wrap:wrap;">' + plats.map(function(x){ return '<button class="plat-tab'+(x.platformId===ACC_PLATFORM?' on':'')+'" data-plat="'+x.platformId+'">'+x.label+'</button>'; }).join('') + '</div>';
       if(p.hint) shell += '<div class="hint">'+esc(p.hint)+'</div>';
       shell += '<div id="acc-area"></div>';
@@ -535,11 +521,6 @@ function post(kind, accountId, extra){
       if(kind==='verify' && o.ok) closeLoginWin();
       // 取消登录成功 → 一并关闭登录 noVNC 标签页（避免黑屏 iframe 残留）
       if(kind==='cancel' && o.ok) closeLoginWin();
-      // 新增账号成功 → 收起表单并清空备注
-      if(kind==='acc-add' && o.ok){
-        var box=$('#acc-add-box'); if(box) box.style.display='none';
-        var rm=$('#acc-add-remark'); if(rm) rm.value='';
-      }
       render();
     })
     .catch(function(e){ toast('请求失败：'+e.message); if(kind==='start') closeLoginWin(); });
@@ -592,14 +573,6 @@ document.addEventListener('click', function(ev){
     fetch(api('/api/login/'+((CUR==='__accounts')?ACC_PLATFORM:CUR)+'/remark'), { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({accountId:acc, remark:remark.trim()}) })
       .then(function(r){ return r.json(); }).then(function(j){ toast((j&&j.msg)||'已更新'); render(); })
       .catch(function(e){ toast('请求失败：'+e.message); });
-    return;
-  }
-  if(kind==='acc-add'){ var box=$('#acc-add-box'); if(box) box.style.display='flex'; return; }
-  if(kind==='acc-add-cancel'){ var box=$('#acc-add-box'); if(box) box.style.display='none'; return; }
-  if(kind==='acc-add-do'){
-    var sel=$('#acc-add-proxy'); var proxyV = sel?Number(sel.value):0;
-    var rmi=$('#acc-add-remark'); var remark = rmi?(rmi.value||'').trim():'';
-    post('acc-add', undefined, { proxyId: proxyV||null, remark: remark });
     return;
   }
   if(kind==='delete' && !confirm('确认删除账号 '+(acc||'')+'？目录与登录态都会被清掉。')) return;
