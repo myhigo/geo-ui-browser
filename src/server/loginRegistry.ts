@@ -634,7 +634,7 @@ export async function resetStaleWaiting(): Promise<void> {
       const accounts = await accountRepo().list(pid);
       for (const a of accounts) {
         if (a.status === 'waiting') {
-          await accountRepo().patch(pid, a.id, { status: 'none', note: '服务重启，登录会话已重置' });
+          await accountRepo().patch(pid, a.id, { status: 'none', note: undefined });
           console.warn(`[login] 清理等待残留：${pid}/${a.id} -> none（服务重启）`);
         }
       }
