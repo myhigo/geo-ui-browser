@@ -329,7 +329,7 @@ function pxTick(){
         + (p.enabled===false?'<span class="meta" style="color:#f53f3f;">已停用</span>':'<span class="meta" style="color:#00b42a;">启用中</span>')
         + '</div>'
         + '<div class="meta">绑定账号：<b>'+p.accounts+'</b></div>'
-        + '<div class="meta">最近使用：<b>'+(p.lastUsedAt?new Date(p.lastUsedAt).toLocaleString():'从未使用')+'</b>'
+        + '<div class="meta">最近使用：<b>'+(p.lastUsedAt?new Date(p.lastUsedAt).toLocaleString():'从未使用')+'</b></div>'
         + (p.username?'<div class="meta">账号：<b>'+esc(p.username)+'</b></div>':'')
         + (p.note?'<div class="meta">备注：<b>'+esc(p.note)+'</b></div>':'')
         + '<div class="btns"><button data-px="'+p.id+'" data-pxact="edit">编辑</button>'
