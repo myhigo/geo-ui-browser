@@ -119,7 +119,7 @@ export async function setAccountEnabled(
 ): Promise<{ ok: boolean; msg: string }> {
   const acc = await accountRepo().get(platformId, accountId);
   if (!acc) return { ok: false, msg: '账号不存在' };
-  await accountRepo().patch(platformId, accountId, { enabled });
+  await accountRepo().patch(platformId, accountId, { enabled, note: undefined });
   return { ok: true, msg: `${accountId} 已${enabled ? '启用' : '停用'}` };
 }
 
@@ -149,7 +149,7 @@ export async function logoutAccount(platformId: string, accountId: string): Prom
     activeLogin = null;
   }
   fs.rmSync(acc.dir, { recursive: true, force: true });
-  await accountRepo().patch(platformId, accountId, { status: 'none', note: '已退出登录', nickname: undefined, lastUsedAt: undefined });
+  await accountRepo().patch(platformId, accountId, { status: 'none', note: undefined, nickname: undefined, lastUsedAt: undefined });
   return { ok: true, msg: `已退出 ${accountId}，登录态已清除` };
 }
 
@@ -460,7 +460,7 @@ export async function startLogin(
     };
     await accountRepo().add(platformId, acc);
   }
-  await accountRepo().patch(platformId, acc.id, { status: 'waiting', note: `登录窗口已打开，等待人工操作（${acc.id}）` });
+  await accountRepo().patch(platformId, acc.id, { status: 'waiting', note: undefined });
   const waitMs = driver.loginWaitMs ?? 6 * 60 * 1000;
 
   const task = (async () => {
@@ -512,11 +512,11 @@ export async function startLogin(
         // 磁盘还原失败 → 登录态未真正持久化，明确标 failed，绝不凭窗口画面标 active
         await accountRepo().patch(platformId, acc.id, {
           status: 'failed',
-          note: `登录态未持久化到磁盘（窗口内已登录但无头重开仍是登录墙）：${v.note ?? ''}`,
+          note: `登录态未持久化到磁盘：${v.note ?? ''}`,
         });
       }
     } else {
-      await accountRepo().patch(platformId, acc.id, { status: 'failed', note: '登录等待超时，未完成登录' });
+      await accountRepo().patch(platformId, acc.id, { status: 'failed', note: '登录等待超时' });
     }
   })();
   // 收尾是异步 fire-and-forget：任意 DB 写入失败都收敛为日志，绝不变成 unhandledRejection 拖垮进程
