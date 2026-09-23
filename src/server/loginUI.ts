@@ -157,16 +157,12 @@ function renderAccounts(){
       accHtml += '<div class="acc"'+(off?' style="opacity:.55"':'')+'>'
         + '<div class="acc-top"><span class="dot" style="background:'+st.c+'"></span>'
         + '<span class="st-label">'+st.t+(a.busy?'（使用中）':'')+'</span>'
-        + '<span class="acc-id">'+esc(a.id)+'</span>'
-        + (off?'<span class="meta" style="margin:0;">已停用</span>':'')+'</div>';
-      // 标签左 / 值右：备注 / 昵称 / 今日查询 / 最近使用 / 连续失败
-      // 备注单独一行并带标签，否则混在标题行里看不出是备注
-      accHtml += '<div class="acc-info">'
-        + '<span class="k">备注</span><b>'+esc(a.remark||'-')+'</b>'
         + '<span class="k">今日查询</span><b>'+(a.todayQueries==null?0:a.todayQueries)+'</b>'
         + '<span class="k">最近使用</span><b>'+(a.lastUsedAt?fmtTime(a.lastUsedAt):'-')+'</b>'
         + (a.consecutiveFails?'<span class="k">连续失败</span><b>'+a.consecutiveFails+'</b>':'')
-        + '</div>';
+        + (off?'<span class="meta" style="margin:0;">已停用</span>':'')+'</div>';
+      // 备注单独一行并带标签，否则混在标题行里看不出是备注
+      accHtml += '<div class="acc-info"><span class="k">备注</span><b>'+esc(a.remark||'-')+'</b></div>';
       accHtml += '<div class="acc-row"><span class="k">代理</span>'+proxySelHtml(a)+'</div>';
       if(a.note) accHtml += '<div class="note">'+esc(a.note)+'</div>';
       // 第一行：主操作（登录/验证 + 退出）
