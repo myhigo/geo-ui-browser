@@ -136,7 +136,7 @@ function renderAccounts(){
         + PROXIES.filter(function(x){ return x.enabled!==false || cur===x.id; }).map(function(x){
           // 与代理管理页保持一致：以 port===0 判直连，标签显示 IP 而非"宿主机"
           var isDirect = x.port===0;
-          var label = isDirect ? esc(x.host)+'（直连）' : esc(x.host)+':'+x.port+'（'+x.protocol+'）';
+          var label = isDirect ? esc(x.host)+'（直连）' : esc(x.host)+':'+x.port;
           if(x.note) label += ' '+esc(x.note);
           return '<option value="'+x.id+'"'+(cur===x.id?' selected':'')+'>'+label+'</option>';
         }).join('');
@@ -258,7 +258,6 @@ function renderProxies(){
     + '<div class="acc"><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">'
     + '<input id="px-host" class="inp" style="width:180px;" placeholder="IP 或域名">'
     + '<input id="px-port" class="inp" style="width:110px;" placeholder="端口（0=直连）">'
-    + '<select id="px-proto" class="inp" style="width:96px;"><option value="http">http</option><option value="socks5">socks5</option></select>'
     + '<input id="px-user" class="inp" style="width:130px;" placeholder="账号（可选）">'
     + '<input id="px-pass" class="inp" style="width:130px;" type="password" placeholder="密码（可选）">'
     + '<input id="px-note" class="inp" style="width:150px;" placeholder="备注（可选）">'
@@ -272,7 +271,7 @@ function renderProxies(){
     var port = Number(portRaw);
     if(!Number.isInteger(port) || port < 0 || port > 65535){ toast('端口需为 0-65535 的整数（0 = 直连不代理）'); return; }
     // host / port 分开传，与 geo_ui_proxy_ip 的 host、port 两列一一对应
-    var payload = { host: host, port: port, protocol: $('#px-proto').value };
+    var payload = { host: host, port: port, protocol: 'http' };
     var u = $('#px-user').value.trim(); if(u) payload.username = u;
     var p = $('#px-pass').value; if(p) payload.password = p;
     var n = $('#px-note').value.trim(); if(n) payload.note = n;
@@ -294,14 +293,13 @@ function pxTick(){
       // port=0 即直连（不设代理）。标题一律显示 IP，直连与否由后面的协议徽标（直连/http/socks5）区分
       var isDirect = p.port===0;
       var title = isDirect ? esc(p.host) : esc(p.host)+':'+p.port;
-      var proto = p.protocol==='direct' ? '直连' : esc(p.protocol);
+      var badge = isDirect ? '直连' : '';
       if(p.id===PX_EDITING){
         // 编辑态：5 个字段 + 保存/取消（密码用 password 类型，esc 防 HTML 注入）
         return '<div class="acc" style="width:calc(33.33% - 8px);min-width:280px;box-sizing:border-box;">'
           + '<input id="pxe-host-'+p.id+'" class="inp" style="width:100%;box-sizing:border-box;" value="'+esc(p.host)+'">'
           + '<div style="display:flex;gap:6px;margin-top:6px;">'
           + '<input id="pxe-port-'+p.id+'" class="inp" style="width:64px;" value="'+p.port+'">'
-          + '<select id="pxe-proto-'+p.id+'" class="inp" style="width:88px;"><option value="http"'+(p.protocol==='http'?' selected':'')+'>http</option><option value="socks5"'+(p.protocol==='socks5'?' selected':'')+'>socks5</option></select>'
           + '<input id="pxe-user-'+p.id+'" class="inp" style="flex:1;min-width:0;" placeholder="账号" value="'+esc(p.username||'')+'">'
           + '<input id="pxe-pass-'+p.id+'" class="inp" style="flex:1;min-width:0;" type="password" placeholder="密码" value="'+esc(p.password||'')+'">'
           + '</div>'
@@ -311,7 +309,7 @@ function pxTick(){
       }
       return '<div class="acc" style="width:calc(33.33% - 8px);min-width:280px;box-sizing:border-box;"><div class="acc-top">'
         + '<span class="st-label" style="font-family:ui-monospace,monospace;">'+title+'</span>'
-        + '<span class="meta">'+proto+'</span>'
+        + (badge ? '<span class="meta">'+badge+'</span>' : '')
         + (p.enabled===false?'<span class="meta" style="color:#f53f3f;">已停用</span>':'<span class="meta" style="color:#00b42a;">启用中</span>')
         + '</div>'
         + '<div class="meta">绑定账号：<b>'+p.accounts+'</b></div>'
@@ -544,9 +542,9 @@ document.addEventListener('click', function(ev){
       if(!host){ toast('请填 IP 或域名'); return; }
       var port = Number(portRaw);
       if(!Number.isInteger(port) || port < 0 || port > 65535){ toast('端口需为 0-65535 的整数（0=直连不代理）'); return; }
-      var body = { host: host, port: port, protocol: $('#pxe-proto-'+pid).value };
+      var body = { host: host, port: port, protocol: (port===0) ? 'direct' : 'http' };
       var u = ($('#pxe-user-'+pid).value||'').trim(); if(u) body.username = u;
-      var pw = $('#pxe-pass-'+pid).value||''; if(pw) body.password = pw;
+      var pw = $('#pxe-pass-'+pid).value||''; body.password = pw;
       var nt = ($('#pxe-note-'+pid).value||'').trim(); if(nt) body.note = nt;
       opt = { method:'PATCH', headers:{'content-type':'application/json'}, body: JSON.stringify(body) };
     } else {
