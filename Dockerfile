@@ -42,6 +42,12 @@ COPY deploy/openbox-rc.xml /root/.config/openbox/rc.xml
 COPY deploy/patch-novnc-numpad.js /tmp/patch-novnc-numpad.js
 RUN node /tmp/patch-novnc-numpad.js && rm /tmp/patch-novnc-numpad.js
 
+# noVNC 一键粘贴（2026-09-23）：登录 iframe 无法粘贴只能手输。
+# 注入 paste 监听：本地 Ctrl+V → 文本经 VNC 发到远端剪贴板 + 自动触发远端 Ctrl+V，
+# 一次粘贴直接进入远端输入框（面板输入框不拦截）。
+COPY deploy/patch-novnc-paste.js /tmp/patch-novnc-paste.js
+RUN node /tmp/patch-novnc-paste.js && rm /tmp/patch-novnc-paste.js
+
 WORKDIR /app
 
 COPY package*.json ./
