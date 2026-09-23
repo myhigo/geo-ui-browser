@@ -173,6 +173,8 @@ function renderAccounts(){
       accHtml += '<div class="btns">';
       if(a.status==='waiting') {
         accHtml += '<button class="primary" data-kind="verify" data-acc="'+a.id+'">验证登录</button>';
+        // 取消登录：释放登录会话并重置状态（服务重启后残留的 waiting 也能在这里清理）
+        accHtml += '<button data-kind="cancel" data-acc="'+a.id+'">取消登录</button>';
       } else if(a.status==='active' || a.status==='cooling') {
         // 已登录态：登录按钮置灰、不可点击（避免重复登录）
         accHtml += '<button class="primary" data-kind="start" data-acc="'+a.id+'" disabled title="已登录，无需重复登录">登录</button>';

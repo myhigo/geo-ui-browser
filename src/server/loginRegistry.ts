@@ -609,6 +609,41 @@ export async function confirmLogin(platformId: string, accountId: string): Promi
   return { ok: true, msg: '收到确认，正在校验登录态…' };
 }
 
+/** 取消某账号的进行中登录：释放活动会话（若有）+ 把状态重置回 none（服务重启后的 waiting 残留也适用）。 */
+export async function cancelLogin(platformId: string, accountId: string): Promise<{ ok: boolean; msg: string }> {
+  const acc = await accountRepo().get(platformId, accountId);
+  if (!acc) return { ok: false, msg: `账号不存在：${accountId}` };
+  // 1) 若该账号正占着登录会话：resolve(false) 让 startLogin 异步收尾走完并关窗；
+  //    随后把状态置 none——startLogin 收尾看到 status==='none' 的守卫（第 494 行）不会回写 failed。
+  //    先后顺序无所谓（resolve→收尾→patch，或 patch→收尾检查），最终都收敛到 none。
+  if (activeLogin && activeLogin.platformId === platformId && activeLogin.accountId === accountId) {
+    const lg = activeLogin;
+    activeLogin = null;
+    try { lg.confirm(false); } catch { /* 已 settle */ }
+    try { await lg.context.close(); } catch { /* 窗口已关 */ }
+  }
+  // 2) 状态重置（无活动会话时同样生效：重启残留在此清理）
+  await accountRepo().patch(platformId, accountId, { status: 'none', note: undefined });
+  return { ok: true, msg: `已取消 ${accountId} 的登录` };
+}
+
+/** 服务启动时清理 waiting 残留：内存登录会话随进程重启必然丢失，waiting 账号无法再「验证登录」，统一重置为 none。 */
+export async function resetStaleWaiting(): Promise<void> {
+  try {
+    for (const pid of Object.keys(LOGIN_DRIVERS)) {
+      const accounts = await accountRepo().list(pid);
+      for (const a of accounts) {
+        if (a.status === 'waiting') {
+          await accountRepo().patch(pid, a.id, { status: 'none', note: '服务重启，登录会话已重置' });
+          console.warn(`[login] 清理等待残留：${pid}/${a.id} -> none（服务重启）`);
+        }
+      }
+    }
+  } catch (e) {
+    console.error('[login] 启动清理 waiting 残留失败（不阻断启动）：', e);
+  }
+}
+
 // ---------- 测试窗口：手动打开该账号的大模型聊天页，全程人工操作 ----------
 // 设计：用账号专属 profile 目录起一个「有头 + 人类化」持久上下文，打开 defaultUrl（聊天页），
 // 不跑任何自动化，窗口常驻供用户手动提问 / 管理历史对话。

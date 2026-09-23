@@ -22,6 +22,8 @@ import {
   allocateSpecificAccount,
   setAccountEnabled,
   confirmLogin,
+  cancelLogin,
+  resetStaleWaiting,
   deleteAccount,
   listViews,
   loginBusy,
@@ -883,6 +885,17 @@ router.post('/api/login/:platform/verify', async (req, res) => {
   res.status(r.ok ? 200 : 400).json({ msg: r.msg });
 });
 
+router.post('/api/login/:platform/cancel', async (req, res) => {
+  const id = String(req.params.platform).toLowerCase();
+  const accountId = bodyAccountId(req);
+  if (!accountId) {
+    res.status(400).json({ msg: '缺少 accountId' });
+    return;
+  }
+  const r = await cancelLogin(id, accountId);
+  res.status(r.ok ? 200 : 400).json({ msg: r.msg });
+});
+
 router.post('/api/login/:platform/logout', async (req, res) => {
   const id = String(req.params.platform).toLowerCase();
   const accountId = bodyAccountId(req);
@@ -973,6 +986,9 @@ export async function startServer(): Promise<void> {
   else app.use(router);
   // 确保宿主机直连行存在（seed，幂等）：host=127.0.0.1 port=0 protocol=direct，与代理 IP 一样参与调度
   await proxyRepo().ensureDirectIp();
+  // 清理服务重启后的 waiting 残留：内存登录会话已随进程丢失，waiting 账号无法再「验证登录」，
+  // 统一重置为 none，避免账号卡在「登录窗口已打开，等待人工操作」无法手动清理
+  await resetStaleWaiting();
   const server = app.listen(PORT);
   // noVNC WebSocket 握手：noVNC 客户端用 path=... 参数发 WS 到 {basePath}/novnc/websockify。
   // express 不处理 upgrade，必须挂在原生 http server 上；转发时把路径重写为 websockify 的 /websockify。
