@@ -33,35 +33,35 @@ export const LOGIN_DRIVERS: Record<string, PlatformLoginDriver> = {
     label: '豆包',
     loginRequired: true,
     loginWaitMs: 6 * 60 * 1000,
-    hint: '请在自动打开的浏览器窗口完成登录（抖音扫码 / 手机验证码均可），完成后回到本页点击「我已登录完成，验证」。窗口标题对应左侧所选账号，别登错号。',
+    hint: '请在自动打开的浏览器窗口完成登录（抖音扫码 / 手机验证码均可），完成后回到本页点击「我已登录完成，验证」。',
   },
   deepseek: {
     platformId: 'deepseek',
     label: 'DeepSeek',
     loginRequired: true,
     loginWaitMs: 6 * 60 * 1000,
-    hint: '请在自动打开的浏览器窗口完成登录（手机验证码 / 微信扫码均可），完成后回到本页点击「我已登录完成，验证」。窗口标题对应左侧所选账号，别登错号。',
+    hint: '请在自动打开的浏览器窗口完成登录（手机验证码 / 微信扫码均可），完成后回到本页点击「我已登录完成，验证」。',
   },
   qwen: {
     platformId: 'qwen',
     label: '千问',
     loginRequired: true,
     loginWaitMs: 6 * 60 * 1000,
-    hint: '请在自动打开的浏览器窗口完成登录（千问扫码 / 手机验证码均可），完成后回到本页点击「我已登录完成，验证」。窗口标题对应左侧所选账号，别登错号。',
+    hint: '请在自动打开的浏览器窗口完成登录（千问扫码 / 手机验证码均可），完成后回到本页点击「我已登录完成，验证」。',
   },
   wenxiaoyan: {
     platformId: 'wenxiaoyan',
     label: '百度文心',
     loginRequired: true,
     loginWaitMs: 6 * 60 * 1000,
-    hint: '请在自动打开的浏览器窗口完成登录（百度账号扫码 / 手机号均可），完成后回到本页点击「我已登录完成，验证」。窗口标题对应左侧所选账号，别登错号。',
+    hint: '请在自动打开的浏览器窗口完成登录（百度账号扫码 / 手机号均可），完成后回到本页点击「我已登录完成，验证」。',
   },
   hunyuan: {
     platformId: 'hunyuan',
     label: '腾讯元宝',
     loginRequired: true,
     loginWaitMs: 6 * 60 * 1000,
-    hint: '请在自动打开的浏览器窗口完成登录（微信扫码 / 手机号均可），完成后回到本页点击「我已登录完成，验证」。窗口标题对应左侧所选账号，别登错号。',
+    hint: '请在自动打开的浏览器窗口完成登录（微信扫码 / 手机号均可），完成后回到本页点击「我已登录完成，验证」。',
   },
 };
 
@@ -128,7 +128,7 @@ export async function deleteAccount(platformId: string, accountId: string): Prom
   const acc = await accountRepo().get(platformId, accountId);
   if (!acc) return { ok: false, msg: '账号不存在' };
   if (isAccountBusy(accountId) || testSessions.has(testKey(platformId, accountId)))
-    return { ok: false, msg: '该账号正在使用中（采集中或测试窗口打开），请先关闭测试窗口后再删' };
+    return { ok: false, msg: '该账号正在使用中，请先关闭测试窗口后再删' };
   fs.rmSync(acc.dir, { recursive: true, force: true });
   await accountRepo().remove(platformId, accountId);
   return { ok: true, msg: `已删除账号 ${accountId}` };
@@ -139,7 +139,7 @@ export async function logoutAccount(platformId: string, accountId: string): Prom
   const acc = await accountRepo().get(platformId, accountId);
   if (!acc) return { ok: false, msg: '账号不存在' };
   if (isAccountBusy(accountId) || testSessions.has(testKey(platformId, accountId)))
-    return { ok: false, msg: '该账号正在使用中（采集中或测试窗口打开），请先关闭测试窗口后再退出' };
+    return { ok: false, msg: '该账号正在使用中，请先关闭测试窗口后再退出' };
   // ⚠️ 登录制平台用持久上下文：仅改台账状态不够——
   //   · 若登录窗口仍开着（status=waiting：用户点了「登录」却还没点「验证」），必须取消登录并关窗，
   //     否则窗口内内存会话会继续显示「已登录对话界面 + 用户信息」，看起来像没退出。
@@ -526,7 +526,7 @@ export async function startLogin(
 // 用户在可见登录窗口点「验证」→ confirmLogin 确认，随后 startLogin 异步收尾 verifySession 校验磁盘。
 export async function confirmLogin(platformId: string, accountId: string): Promise<{ ok: boolean; msg: string }> {
   if (!activeLogin || activeLogin.platformId !== platformId || activeLogin.accountId !== accountId) {
-    return { ok: false, msg: '当前没有进行中的该账号登录会话（可能已结束或超时）' };
+    return { ok: false, msg: '当前没有进行中的该账号登录会话' };
   }
   // 直接在用户刚登录完成的可见窗口上操作：等 SPA 水合登录态 + 诊断落盘 + 会话级 cookie 转持久。
   // 不再抽昵称（2026-09-23 按用户要求简化）。
@@ -718,7 +718,7 @@ export async function testAccount(
   });
   return {
     ok: true,
-    msg: `已为 ${accountId} 打开测试窗口（${driver.label}），可手动提问 / 管理历史对话；关窗即结束。`,
+    msg: `已为 ${accountId} 打开测试窗口（${driver.label}）`,
   };
 }
 

@@ -287,7 +287,7 @@ export async function execute(
     if (result.loginRequired) {
       throw new ApiError(
         401,
-        `「${LOGIN_DRIVERS[platform]?.label ?? platform}」${ledgerAccountId} 登录态失效或未持久化（磁盘上无有效登录会话），本轮已按失败处理。请到 /admin 对该账号点「退出登录」后重新登录，再重试。`
+        `「${LOGIN_DRIVERS[platform]?.label ?? platform}」${ledgerAccountId} 登录态未持久化，本轮按失败处理，请重新登录后再重试。`
       );
     }
   }
@@ -492,7 +492,7 @@ router.post('/api/pull/run', (req, res) => {
   if (!host) {
     res
       .status(400)
-      .json({ msg: '缺少对方服务地址：请在请求体传 pullHost（admin 页可填），或启动时注入 GEO_PULL_HOST' });
+      .json({ msg: '缺少对方服务地址：请传 pullHost 或设置 GEO_PULL_HOST' });
     return;
   }
   if (pullStatus.running) {
