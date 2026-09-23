@@ -273,10 +273,12 @@ function launchOpts(proxy?: { server: string; username?: string; password?: stri
   const fp = fingerprint();
   const o: Parameters<typeof chromium.launchPersistentContext>[1] = {
     headless: false,
-    args: ['--disable-blink-features=AutomationControlled'],
+    args: ['--disable-blink-features=AutomationControlled', '--lang=zh-CN'],
     ignoreDefaultArgs: ['--enable-automation'],
     viewport: fp.viewport,
     userAgent: fp.userAgent,
+    locale: fp.locale,
+    timezoneId: fp.timezoneId,
     ...(proxy ? { proxy } : {}),
   };
   if (config.chromePath) o.executablePath = config.chromePath;
