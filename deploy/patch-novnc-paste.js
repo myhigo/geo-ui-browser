@@ -75,12 +75,19 @@ if (!h.includes(barMarker)) {
     var rfb = (typeof window.__geoGetRfb === 'function') ? window.__geoGetRfb() : null;
     return !!(rfb && rfb._rfb_connection_state && rfb._rfb_connection_state === 'connected');
   }
+  var tipEl = document.getElementById('geo-paste-tip');
+  function tipShow(txt, color){
+    if (tipEl) { tipEl.textContent = txt; tipEl.style.color = color || '#4ade80'; }
+    setTimeout(function(){
+      if (tipEl) { tipEl.textContent = '粘贴：'; tipEl.style.color = '#bbb'; }
+      input.placeholder = '点击后 Ctrl+V';
+    }, 2500);
+  }
   function send(t){
     t = (t || '').trim();
-    if (!t) return;
+    if (!t) { tipShow('内容为空', '#fbbf24'); return; }
     if (!connected()){
-      input.placeholder = '未连接，内容已保留';
-      setTimeout(function(){ input.placeholder = '点击后 Ctrl+V'; }, 2000);
+      tipShow('未连接', '#f87171');
       return;
     }
     try {
@@ -91,14 +98,9 @@ if (!h.includes(barMarker)) {
       rfb.sendKey(0x76, 'KeyV', false);
       rfb.sendKey(0xffe3, 'ControlLeft', false);
       input.value = '';
-      var tip = document.getElementById('geo-paste-tip');
-      if (tip) tip.textContent = '✓ 已发送';
-      setTimeout(function(){
-        if (tip) tip.textContent = '粘贴：';
-        input.placeholder = '点击后 Ctrl+V';
-      }, 1500);
+      tipShow('✓ 已发送');
     } catch (e) {
-      input.placeholder = '发送失败';
+      tipShow('发送失败', '#f87171');
     }
   }
   /* 粘贴进输入框后不自动发送，等用户点「发送」（内容可先检查） */
