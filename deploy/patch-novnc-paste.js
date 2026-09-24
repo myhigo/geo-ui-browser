@@ -1,43 +1,116 @@
 #!/usr/bin/env node
-// noVNC 一键粘贴修复（2026-09-23，geo-ui-browser 部署补丁）
+// noVNC 一键粘贴修复 v2（2026-09-24，geo-ui-browser 部署补丁）
 //
 // 现象：登录 iframe（noVNC）里无法粘贴，只能手输账号密码。
-// 根因：Debian 版 noVNC 未监听浏览器 paste 事件自动上传剪贴板，
-//       只有左侧剪贴板面板（手动点开 → 粘贴 → send）一条路。
-// 修复：在 ui.js 注入 document 级 paste 监听——
-//       本地在 noVNC 页面按 Ctrl+V 时：
-//         1) clipboardPasteFrom(text) 把文本通过 VNC Clipboard 伪编码发给远端 X 剪贴板
-//            （x11vnc 已带 XFIXES，支持接收）；
-//         2) sendKey 自动在远端按一次 Ctrl+V，把文本直接粘进当前聚焦的输入框。
-//       一次本地 Ctrl+V 即完成"粘贴"，无需手输，也不用两次手动操作。
-// 排除项：焦点在 noVNC 面板输入框/textarea 时不拦截（保留面板原有粘贴行为）。
+// 根因 v1 教训：document 级 paste 监听只在焦点位于页面可编辑区域时触发；
+//       用户实际操作是焦点在 noVNC 画布（canvas）内按 Ctrl+V，
+//       浏览器不派发 paste 事件 → 监听永远不触发 → 粘贴无反应。
+// v2 方案：在 vnc.html 注入一个常驻「粘贴条」（右下角输入框）：
+//       用户点击粘贴条输入框 → 焦点在本地 INPUT → 浏览器原生 Ctrl+V 必然成功
+//       → 脚本读 clipboardData → clipboardPasteFrom 写入远端 X 剪贴板
+//       （x11vnc XFIXES 接收）→ sendKey 自动在远端按一次 Ctrl+V 粘进当前输入框。
+//       完全绕开 canvas 焦点与浏览器剪贴板权限问题。
+// 同时保留 v1 的 document paste 监听（焦点落在非输入区时 Ctrl+V 也自动粘贴）。
 //
 // 幂等：marker 已存在则跳过。
 const fs = require('fs');
 
-const f = '/usr/share/novnc/app/ui.js';
-let s = fs.readFileSync(f, 'utf8');
-const marker = '/* geo-paste-auto */';
-if (s.includes(marker)) {
-  console.log('[novnc-patch] paste-auto already injected, skip');
-  process.exit(0);
+// ── 1) ui.js：保留 v1 document 级 paste 监听 ────────────────────────────────
+const uif = '/usr/share/novnc/app/ui.js';
+let s = fs.readFileSync(uif, 'utf8');
+const uiMarker = '/* geo-paste-auto */';
+if (!s.includes(uiMarker)) {
+  const code = `
+/* geo-paste-auto: 本地 Ctrl+V → 远端剪贴板 + 自动远端 Ctrl+V（2026-09-24 v2） */
+/* noVNC 的 UI 是 ES 模块内对象，不挂 window；暴露钩子供 vnc.html 全局脚本取 rfb */
+if (!window.__geoGetRfb) {
+  window.__geoGetRfb = function () { return UI && UI.rfb ? UI.rfb : null; };
 }
-const code = `
-/* geo-paste-auto: 本地 Ctrl+V → 远端剪贴板 + 自动远端 Ctrl+V（2026-09-23） */
 document.addEventListener('paste', function (geoPasteEv) {
   var tg = geoPasteEv.target;
   if (tg && (tg.tagName === 'TEXTAREA' || tg.tagName === 'INPUT')) return;
   var d = geoPasteEv.clipboardData || {};
   var t = (typeof d.getData === 'function') ? d.getData('text/plain') : '';
-  if (!t || !UI.rfb || UI.rfb._rfb_connection_state !== 'connected') return;
+  var rfb = window.__geoGetRfb ? window.__geoGetRfb() : null;
+  if (!t || !rfb || rfb._rfb_connection_state !== 'connected') return;
   geoPasteEv.preventDefault();
-  UI.rfb.clipboardPasteFrom(t);
-  UI.rfb.sendKey(0xffe3, 'ControlLeft', true);
-  UI.rfb.sendKey(0x76, 'KeyV', true);
-  UI.rfb.sendKey(0x76, 'KeyV', false);
-  UI.rfb.sendKey(0xffe3, 'ControlLeft', false);
+  rfb.clipboardPasteFrom(t);
+  rfb.sendKey(0xffe3, 'ControlLeft', true);
+  rfb.sendKey(0x76, 'KeyV', true);
+  rfb.sendKey(0x76, 'KeyV', false);
+  rfb.sendKey(0xffe3, 'ControlLeft', false);
 });
 `;
-s = s + code;
-fs.writeFileSync(f, s);
-console.log('[novnc-patch] paste-auto injected into ui.js');
+  s = s + code;
+  fs.writeFileSync(uif, s);
+  console.log('[novnc-patch] ui.js paste-auto injected');
+} else {
+  console.log('[novnc-patch] ui.js paste-auto already injected, skip');
+}
+
+// ── 2) vnc.html：注入常驻粘贴条 ─────────────────────────────────────────────
+const htmlf = '/usr/share/novnc/vnc.html';
+let h = fs.readFileSync(htmlf, 'utf8');
+const barMarker = 'geo-paste-bar';
+if (!h.includes(barMarker)) {
+  const bar = `
+<!-- geo-paste-bar: 一键粘贴条（2026-09-24 v2） -->
+<div id="geo-paste-bar" style="position:fixed;right:12px;bottom:12px;z-index:2147483647;display:flex;align-items:center;gap:6px;background:rgba(28,28,30,.94);border:1px solid #5a5a5f;border-radius:20px;padding:5px 10px;box-shadow:0 2px 12px rgba(0,0,0,.45);font-size:12px;color:#bbb;">
+  <span id="geo-paste-tip">粘贴：</span>
+  <input id="geo-paste-in" placeholder="点击后 Ctrl+V" style="width:240px;max-width:38vw;background:#1c1c1e;color:#eee;border:1px solid #5a5a5f;border-radius:14px;padding:4px 10px;font-size:13px;outline:none;" autocomplete="off" spellcheck="false">
+</div>
+`;
+  h = h.replace('</body>', bar + '</body>');
+  const script = `
+<script>
+/* geo-paste-bar JS（2026-09-24 v2） */
+(function(){
+  var input = document.getElementById('geo-paste-in');
+  if (!input) return;
+  function connected(){
+    var rfb = (typeof window.__geoGetRfb === 'function') ? window.__geoGetRfb() : null;
+    return !!(rfb && rfb._rfb_connection_state && rfb._rfb_connection_state === 'connected');
+  }
+  function send(t){
+    t = (t || '').trim();
+    if (!t) return;
+    if (!connected()){
+      input.placeholder = '未连接，内容已保留';
+      setTimeout(function(){ input.placeholder = '点击后 Ctrl+V'; }, 2000);
+      return;
+    }
+    try {
+      var rfb = window.__geoGetRfb ? window.__geoGetRfb() : null;
+      rfb.clipboardPasteFrom(t);
+      rfb.sendKey(0xffe3, 'ControlLeft', true);
+      rfb.sendKey(0x76, 'KeyV', true);
+      rfb.sendKey(0x76, 'KeyV', false);
+      rfb.sendKey(0xffe3, 'ControlLeft', false);
+      input.value = '';
+      var tip = document.getElementById('geo-paste-tip');
+      if (tip) tip.textContent = '✓ 已发送';
+      setTimeout(function(){
+        if (tip) tip.textContent = '粘贴：';
+        input.placeholder = '点击后 Ctrl+V';
+      }, 1500);
+    } catch (e) {
+      input.placeholder = '发送失败';
+    }
+  }
+  input.addEventListener('paste', function(e){
+    var d = e.clipboardData || {};
+    var t = (typeof d.getData === 'function') ? d.getData('text/plain') : '';
+    setTimeout(function(){ send(t || input.value); }, 0);
+  });
+  input.addEventListener('keydown', function(e){
+    if (e.key === 'Enter') { send(input.value); e.preventDefault(); }
+  });
+})();
+</script>
+`;
+  h = h.replace('</body>', script + '</body>');
+  fs.writeFileSync(htmlf, h);
+  console.log('[novnc-patch] vnc.html paste-bar injected');
+} else {
+  console.log('[novnc-patch] vnc.html paste-bar already injected, skip');
+}
