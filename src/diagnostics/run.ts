@@ -478,6 +478,10 @@ export async function runDiagnostic(
       // 豆包等无文字级"生成结束"标志的平台：生成中途落盘一份 DOM，用于定标结束标志
       await adapter.waitForAnswer(180000, debug ? path.join(root, 'page', 'answering.html') : undefined);
       if (debug) {
+        // 最终截图前检查弹窗：有则关闭（复用平台 dismissAds，已修复 auto-wait 卡顿），
+        // 再截图，保证 04-finished 画面干净。关不掉也不影响（输入发送已完成）。
+        if (adapter.dismissAds) await adapter.dismissAds().catch(() => false);
+        await page.waitForTimeout(500);
         await page.screenshot({ path: path.join(dirS, '04-finished.png') });
         capturedShots.push('04-finished.png');
       }
