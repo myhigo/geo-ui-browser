@@ -10,7 +10,11 @@ export async function firstFound(
   for (const sel of candidates) {
     try {
       const loc = page.locator(sel).first();
-      if ((await loc.count()) > 0) return { locator: loc, selector: sel };
+      // count>0 不代表可见：外壳容器/隐藏 textarea 也会命中，导致点击聚焦无效后静默 30s 超时。
+      // 加可见性过滤，命中真正可见可交互的输入框。
+      if ((await loc.count()) > 0 && (await loc.isVisible().catch(() => false))) {
+        return { locator: loc, selector: sel };
+      }
     } catch {
       /* selector 语法不支持等，忽略继续 */
     }

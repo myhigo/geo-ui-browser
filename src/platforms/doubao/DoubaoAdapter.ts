@@ -118,7 +118,8 @@ export class DoubaoAdapter implements PlatformAdapter {
     if (!input) throw new Error('ELEMENT_NOT_FOUND: input');
 
     // 聚焦可编辑区：先点击，再用 .focus() 强制兜底（避免点击被拦截导致失焦）
-    await input.locator.click().catch(() => {});
+    // 显式 8s 超时：慢代理/遮挡下快速失败走兜底，不累积 Playwright 默认 30s 静默超时
+    await input.locator.click({ timeout: 8000 }).catch(() => {});
     await this.page.waitForTimeout(randWaitMs(DOUBAO_INPUT_FOCUS_SETTLE));
     await input.locator.focus().catch(() => {});
     await this.page.waitForTimeout(randWaitMs(DOUBAO_INPUT_FOCUS_AFTER));
@@ -136,7 +137,7 @@ export class DoubaoAdapter implements PlatformAdapter {
     if (!(await focusedEditable())) {
       console.warn('⚠️ 编辑器未获焦点，尝试 textarea 兜底聚焦');
       const ta = this.page.locator('textarea').first();
-      await ta.click().catch(() => {});
+      await ta.click({ timeout: 8000 }).catch(() => {});
       await ta.focus().catch(() => {});
     }
 
@@ -167,7 +168,7 @@ export class DoubaoAdapter implements PlatformAdapter {
       await this.page.waitForTimeout(2000);
       await this.dismissAds().catch(() => false);
       await this.page.waitForTimeout(500);
-      await input.locator.click().catch(() => {});
+      await input.locator.click({ timeout: 8000 }).catch(() => {});
       await input.locator.focus().catch(() => {});
       await this.page.waitForTimeout(randWaitMs(DOUBAO_INPUT_PRE_TYPE));
       await this.humanType(question);
