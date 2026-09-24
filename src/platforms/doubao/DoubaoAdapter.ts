@@ -77,12 +77,20 @@ export class DoubaoAdapter implements PlatformAdapter {
     ];
     for (const sel of closeSelectors) {
       const btn = this.page.locator(sel).first();
+      // 关键：locator.evaluate 默认会等待元素出现（30s 超时）——5 个选择器都不匹配时
+      // 会静默空等 150s（页面就绪后迟迟不输入的根因）。先 count() 立即返回匹配数，
+      // 无匹配直接跳过，绝不进入 30s auto-wait。
+      if ((await btn.count().catch(() => 0)) === 0) continue;
       const visible = await btn
-        .evaluate((el) => {
-          const r = (el as HTMLElement).getBoundingClientRect();
-          const s = getComputedStyle(el as HTMLElement);
-          return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none';
-        })
+        .evaluate(
+          (el) => {
+            const r = (el as HTMLElement).getBoundingClientRect();
+            const s = getComputedStyle(el as HTMLElement);
+            return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none';
+          },
+          null,
+          { timeout: 1500 }
+        )
         .catch(() => false);
       if (visible) {
         await btn.click({ timeout: 1500 }).catch(() => {});
@@ -90,14 +98,21 @@ export class DoubaoAdapter implements PlatformAdapter {
         if ((await visibleDialogCount()) === 0) return true;
       }
     }
-    // 3) 全屏遮罩点击兜底
+    // 3) 全屏遮罩点击兜底（同样先 count 免 30s auto-wait）
     const mask = this.page.locator('[class*="mask" i][class*="fixed" i], [class*="overlay" i]').first();
-    const maskVisible = await mask
-      .evaluate((el) => {
-        const r = (el as HTMLElement).getBoundingClientRect();
-        return r.width > 0 && r.height > 0;
-      })
-      .catch(() => false);
+    const maskCount = await mask.count().catch(() => 0);
+    const maskVisible = maskCount > 0
+      ? await mask
+          .evaluate(
+            (el) => {
+              const r = (el as HTMLElement).getBoundingClientRect();
+              return r.width > 0 && r.height > 0;
+            },
+            null,
+            { timeout: 1500 }
+          )
+          .catch(() => false)
+      : false;
     if (maskVisible) {
       const box = await mask.boundingBox().catch(() => null);
       if (box) {
