@@ -55,9 +55,9 @@ const barMarker = 'geo-paste-bar';
 if (!h.includes(barMarker)) {
   const bar = `
 <!-- geo-paste-bar: 一键粘贴条（2026-09-24 v2） -->
-<div id="geo-paste-bar" style="position:fixed;right:12px;bottom:12px;z-index:2147483647;display:flex;align-items:center;gap:6px;background:rgba(28,28,30,.94);border:1px solid #5a5a5f;border-radius:20px;padding:5px 10px;box-shadow:0 2px 12px rgba(0,0,0,.45);font-size:12px;color:#bbb;">
+<div id="geo-paste-bar" style="position:fixed;right:12px;bottom:12px;z-index:2147483647;display:flex;align-items:center;gap:6px;background:rgba(28,28,30,.94);border:1px solid #5a5a5f;border-radius:20px;padding:5px 10px;box-shadow:0 2px 12px rgba(0,0,0,.45);font-size:12px;color:#bbb;cursor:pointer;" title="点这里，再按 Cmd/Ctrl+V 粘贴">
   <span id="geo-paste-tip">粘贴：</span>
-  <input id="geo-paste-in" placeholder="点击后 Ctrl+V" style="width:240px;max-width:38vw;background:#1c1c1e;color:#eee;border:1px solid #5a5a5f;border-radius:14px;padding:4px 10px;font-size:13px;outline:none;" autocomplete="off" spellcheck="false">
+  <input id="geo-paste-in" placeholder="点击后 Ctrl+V" style="width:240px;max-width:38vw;background:#1c1c1e;color:#eee;border:1px solid #5a5a5f;border-radius:14px;padding:4px 10px;font-size:13px;outline:none;cursor:text;" autocomplete="off" spellcheck="false">
 </div>
 `;
   h = h.replace('</body>', bar + '</body>');
@@ -65,8 +65,11 @@ if (!h.includes(barMarker)) {
 <script>
 /* geo-paste-bar JS（2026-09-24 v2） */
 (function(){
+  var bar = document.getElementById('geo-paste-bar');
   var input = document.getElementById('geo-paste-in');
   if (!input) return;
+  /* 点击条子任意位置 → 聚焦输入框（避免点到空白处没反应） */
+  if (bar) bar.addEventListener('click', function (e) { if (e.target !== input) input.focus(); });
   function connected(){
     var rfb = (typeof window.__geoGetRfb === 'function') ? window.__geoGetRfb() : null;
     return !!(rfb && rfb._rfb_connection_state && rfb._rfb_connection_state === 'connected');
@@ -104,6 +107,30 @@ if (!h.includes(barMarker)) {
   });
   input.addEventListener('keydown', function(e){
     if (e.key === 'Enter') { send(input.value); e.preventDefault(); }
+  });
+  /* 兜底：焦点不在输入框时按 Cmd/Ctrl+V → 尝试读剪贴板直达；读不到则聚焦粘贴框引导再按一次 */
+  document.addEventListener('keydown', function (e) {
+    var mod = e.metaKey || e.ctrlKey;
+    if (!mod) return;
+    var k = (e.key || '').toLowerCase();
+    if (k !== 'v') return;
+    var tg = e.target;
+    if (tg && (tg.tagName === 'INPUT' || tg.tagName === 'TEXTAREA' || tg.isContentEditable)) return;
+    e.preventDefault();
+    function fallback(){
+      input.focus();
+      input.placeholder = '请再按一次 Cmd/Ctrl+V';
+      setTimeout(function(){ input.placeholder = '点击后 Ctrl+V'; }, 3000);
+    }
+    try {
+      if (navigator.clipboard && navigator.clipboard.readText) {
+        navigator.clipboard.readText().then(function (t) {
+          if (t) send(t); else fallback();
+        }).catch(fallback);
+        return;
+      }
+    } catch (err) {}
+    fallback();
   });
 })();
 </script>
