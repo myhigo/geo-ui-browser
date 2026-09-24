@@ -152,6 +152,32 @@ export async function runDiagnostic(
   let browser: Browser;
   let context: BrowserContext;
   if (opts.userDataDir) {
+    // ⚠️ profile 占用检测：登录窗口的有头浏览器（launchPersistentContext）与收录检测
+    //    用同一账号目录时，Chromium 单实例锁冲突 → 浏览器被关 → 报「Target page closed」
+    //    （12-18/12-20 线上失败根因）。这里先查锁文件，占用则等待最多 12s 并明确提示。
+    const lockFiles = ['SingletonLock', 'SingletonSocket', 'SingletonCookie'];
+    const profileLocked = (): string | null => {
+      try {
+        for (const f of lockFiles) {
+          const p2 = path.join(opts.userDataDir as string, f);
+          if (fs.existsSync(p2)) return f;
+        }
+      } catch { /* 忽略 */ }
+      return null;
+    };
+    const lockWaitDeadline = Date.now() + 12000;
+    for (;;) {
+      const lock = profileLocked();
+      if (!lock) break;
+      const remain = Math.max(1, Math.round((lockWaitDeadline - Date.now()) / 1000));
+      console.warn(`⚠️ profile 被占用（${lock}）：登录窗口可能未关闭，等待 ${remain}s 释放后重试（${path.resolve(opts.userDataDir as string)}）`);
+      await new Promise((r) => setTimeout(r, 3000));
+      if (Date.now() >= lockWaitDeadline) {
+        throw new Error(
+          `PROFILE_LOCKED: 账号 profile 被占用（${lock}）——请先关闭该账号的登录窗口/测试窗口再重试（${path.resolve(opts.userDataDir as string)}）`
+        );
+      }
+    }
     context = await chromium.launchPersistentContext(opts.userDataDir, {
       ...launchOpts,
       ...contextOpts,
