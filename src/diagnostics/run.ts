@@ -14,7 +14,7 @@ import path from 'path';
 import { resolvePlatform, PlatformDef } from '../platforms/index.js';
 import { probeElements } from './elementProbe.js';
 import { DiagnosticResult, ElementDiagnosisItem, SourceInfo, ScreenshotMode } from '../types.js';
-import { config } from '../config/index.js';
+import { config, paths } from '../config/index.js';
 import { fingerprint, Fingerprint } from '../config/fingerprint.js';
 import { trackContext, untrackContext, trackBrowser, untrackBrowser } from '../runtime/shutdown.js';
 
@@ -125,10 +125,10 @@ export async function runDiagnostic(
   const [day, time] = stamp.split('_');
   const queryName =
     question.replace(/[\\/:*?"<>|\s]+/g, '').slice(0, 50) || '未命名';
-  let root = path.resolve(`diagnostics/${def.id}/${day}/${time}-${queryName}`);
+  let root = path.join(paths.diagnosticsRoot, `${def.id}/${day}/${time}-${queryName}`);
   let seq = 2; // 同秒同名去重
   while (debug && fs.existsSync(root)) {
-    root = path.resolve(`diagnostics/${def.id}/${day}/${time}-${queryName}-${seq}`);
+    root = path.join(paths.diagnosticsRoot, `${def.id}/${day}/${time}-${queryName}-${seq}`);
     seq++;
   }
   const dirS = path.join(root, 'screenshot');

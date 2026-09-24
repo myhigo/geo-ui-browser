@@ -387,10 +387,10 @@ async function openProbe(
     if (loginRequired) {
       // 诊断落盘：窗口内已登录但无头重开仍撞墙时，据此排查水合/持久化问题
       try {
-        fs.mkdirSync(path.resolve('diagnostics'), { recursive: true });
+        fs.mkdirSync(path.join(paths.diagnosticsRoot), { recursive: true });
         const ts = Date.now();
         const html = await page.content();
-        fs.writeFileSync(path.resolve('diagnostics', `login-${platformId}-probe-fail-${ts}.html`), html, 'utf8');
+        fs.writeFileSync(path.join(paths.diagnosticsRoot, `login-${platformId}-probe-fail-${ts}.html`), html, 'utf8');
         const ls = await page.evaluate(() => {
           const o: Record<string, string> = {};
           for (let i = 0; i < localStorage.length; i++) {
@@ -399,10 +399,10 @@ async function openProbe(
           }
           return o;
         });
-        fs.writeFileSync(path.resolve('diagnostics', `login-${platformId}-probe-fail-${ts}.ls.json`), JSON.stringify(ls, null, 2), 'utf8');
+        fs.writeFileSync(path.join(paths.diagnosticsRoot, `login-${platformId}-probe-fail-${ts}.ls.json`), JSON.stringify(ls, null, 2), 'utf8');
         const cookies = await context.cookies();
         fs.writeFileSync(
-          path.resolve('diagnostics', `login-${platformId}-probe-fail-${ts}.cookies.json`),
+          path.join(paths.diagnosticsRoot, `login-${platformId}-probe-fail-${ts}.cookies.json`),
           JSON.stringify(
             cookies.map((c) => ({ name: c.name, domain: c.domain, path: c.path, httpOnly: c.httpOnly, expires: c.expires, secure: c.secure })),
             null,
@@ -549,8 +549,8 @@ export async function confirmLogin(platformId: string, accountId: string): Promi
       const html = await pg.content().catch(() => '');
       if (html) {
         try {
-          fs.mkdirSync(path.resolve('diagnostics'), { recursive: true });
-          fs.writeFileSync(path.resolve('diagnostics', `login-${platformId}-${Date.now()}.html`), html, 'utf8');
+          fs.mkdirSync(path.join(paths.diagnosticsRoot), { recursive: true });
+          fs.writeFileSync(path.join(paths.diagnosticsRoot, `login-${platformId}-${Date.now()}.html`), html, 'utf8');
         } catch {
           /* ignore */
         }
@@ -564,7 +564,7 @@ export async function confirmLogin(platformId: string, accountId: string): Promi
           .filter((c) => /bduss|stoken|passid|ubid|login_ticket/i.test(c.name))
           .map((c) => ({ name: c.name, domain: c.domain, expires: c.expires, httpOnly: c.httpOnly, len: (c.value || '').length }));
         fs.writeFileSync(
-          path.resolve('diagnostics', `login-${platformId}-cookies-${Date.now()}.json`),
+          path.join(paths.diagnosticsRoot, `login-${platformId}-cookies-${Date.now()}.json`),
           JSON.stringify(
             { url: pg.url().slice(0, 200), cookieTotal: cookies.length, loginish, all: cookies.map((c) => `${c.domain} ${c.name}`) },
             null,
