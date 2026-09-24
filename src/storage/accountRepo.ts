@@ -63,7 +63,7 @@ const legacyStateFileOf = (platformId: string): string =>
 export class FileAccountRepo implements AccountRepo {
   async list(platformId: string): Promise<Account[]> {
     try {
-      return JSON.parse(fs.readFileSync(ledgerFileOf(platformId), 'utf-8')) as Account[];
+      return (JSON.parse(fs.readFileSync(ledgerFileOf(platformId), 'utf-8')) as Account[]).reverse();
     } catch {
       return this.migrateLegacy(platformId);
     }
@@ -229,7 +229,7 @@ export class MysqlAccountRepo implements AccountRepo {
     const [rows] = await dbPool().query<Row[]>(
       `SELECT ${SELECT_COLS} FROM geo_ui_platform_account
         WHERE node_id = ? AND platform_id = ?
-        ORDER BY account_code`,
+        ORDER BY created_at DESC, id DESC`,
       [config.nodeId, platformId]
     );
     return rows.map(toAccount);

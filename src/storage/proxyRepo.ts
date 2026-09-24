@@ -87,7 +87,7 @@ export class FileProxyRepo implements ProxyRepo {
   }
 
   async list(): Promise<ProxyIp[]> {
-    return this.load().filter((p) => p.nodeId === config.nodeId);
+    return this.load().filter((p) => p.nodeId === config.nodeId).reverse();
   }
 
   async get(id: number): Promise<ProxyIp | undefined> {
@@ -200,7 +200,7 @@ const FIELD_MAP: Record<string, string> = {
 export class MysqlProxyRepo implements ProxyRepo {
   async list(): Promise<ProxyIp[]> {
     const [rows] = await dbPool().query<Row[]>(
-      `SELECT ${SELECT_COLS} FROM geo_ui_proxy_ip WHERE node_id = ? ORDER BY id`,
+      `SELECT ${SELECT_COLS} FROM geo_ui_proxy_ip WHERE node_id = ? ORDER BY id DESC`,
       [config.nodeId]
     );
     return rows.map(toProxy);
