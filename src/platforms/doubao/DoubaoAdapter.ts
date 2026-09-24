@@ -180,11 +180,15 @@ export class DoubaoAdapter implements PlatformAdapter {
       await input.locator.click({ timeout: 8000 }).catch(() => {});
       await input.locator.focus().catch(() => {});
       await this.page.waitForTimeout(randWaitMs(DOUBAO_INPUT_PRE_TYPE));
-      await this.humanType(question);
+      // 重试改用 insertText 一次性可靠输入：逐字 type 在 textarea 受控组件/页面
+      // 重渲染下可能全部丢失（15:03 实测：打字完成但输入框为空）。insertText 直接
+      // 插入 + 触发 input 事件，React 受控组件可捕获，内容必然保留。
+      await this.page.keyboard.insertText(question).catch(() => {});
+      await this.page.waitForTimeout(400);
     }
     if (!(await ok())) {
-      console.warn('⚠️ 输入校验失败：问题文本未进入输入框，请人工检查（见 02-question.png）');
-      return; // 未输入成功就不假装已发送，交由调用方判失败
+      // 最终失败：直接抛错，上层不再 waitForAnswer（避免欢迎页/默认内容被误判为回答）
+      throw new Error('INPUT_NOT_ENTERED: 问题文本未进入输入框（已重试一次）');
     }
 
     // 是否真的发出去：输入框是否已被清空（不再含原问题）。此时输入框必含原问题，

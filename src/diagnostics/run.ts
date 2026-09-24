@@ -501,6 +501,11 @@ export async function runDiagnostic(
       }
     } catch (e) {
       notes.push(`⚠️ 交互流程中断（多为元素未定位）：${(e as Error).message}`);
+      // 输入/发送失败等中断：补拍现场，供人工核验（02 正常路径在 sendQuestion 后拍）
+      if (debug && !fs.existsSync(path.join(dirS, '02-question.png'))) {
+        await page.screenshot({ path: path.join(dirS, '02-question.png') }).catch(() => {});
+        capturedShots.push('02-question.png');
+      }
     }
 
     if (asked) {
