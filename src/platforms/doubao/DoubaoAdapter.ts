@@ -98,29 +98,9 @@ export class DoubaoAdapter implements PlatformAdapter {
         if ((await visibleDialogCount()) === 0) return true;
       }
     }
-    // 3) 全屏遮罩点击兜底（同样先 count 免 30s auto-wait）
-    const mask = this.page.locator('[class*="mask" i][class*="fixed" i], [class*="overlay" i]').first();
-    const maskCount = await mask.count().catch(() => 0);
-    const maskVisible = maskCount > 0
-      ? await mask
-          .evaluate(
-            (el) => {
-              const r = (el as HTMLElement).getBoundingClientRect();
-              return r.width > 0 && r.height > 0;
-            },
-            null,
-            { timeout: 1500 }
-          )
-          .catch(() => false)
-      : false;
-    if (maskVisible) {
-      const box = await mask.boundingBox().catch(() => null);
-      if (box) {
-        await this.page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
-        await this.page.waitForTimeout(500);
-        if ((await visibleDialogCount()) === 0) return true;
-      }
-    }
+    // 3) 不再做遮罩坐标点击兜底：豆包输入区/操作区存在 class 含 overlay 的容器，
+    //    点击中心极易误触输入栏 + 按钮（弹出附件菜单）→ 干扰输入发送与回答渲染。
+    //    关不掉就不关（键盘输入/Enter 发送不检查遮挡，弹窗不影响主流程）。
     return false;
   }
 
