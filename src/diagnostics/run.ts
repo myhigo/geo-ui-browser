@@ -475,8 +475,21 @@ export async function runDiagnostic(
         capturedShots.push('03-answering.png');
       }
 
-      // 豆包等无文字级"生成结束"标志的平台：生成中途落盘一份 DOM，用于定标结束标志
-      await adapter.waitForAnswer(180000, debug ? path.join(root, 'page', 'answering.html') : undefined);
+      // 豆包等无文字级"生成结束"标志的平台：生成中途落盘一份 DOM，用于定标结束标志。
+      // 等待回答输出期间每 15s 检查一次弹窗并关闭（防止弹窗遮挡/中断回答渲染），
+      // 不影响回答等待本身；waitForAnswer 的异常语义保持不变（原样抛出给外层 catch）。
+      let answerDone = false;
+      let answerErr: unknown = null;
+      const answerDoneP = adapter
+        .waitForAnswer(180000, debug ? path.join(root, 'page', 'answering.html') : undefined)
+        .catch((e: unknown) => { answerErr = e; })
+        .then(() => { answerDone = true; });
+      while (!answerDone) {
+        await Promise.race([answerDoneP, page.waitForTimeout(15000)]);
+        if (answerDone) break;
+        if (adapter.dismissAds) await adapter.dismissAds().catch(() => false);
+      }
+      if (answerErr) throw answerErr;
       if (debug) {
         // 最终截图前检查弹窗：有则关闭（复用平台 dismissAds，已修复 auto-wait 卡顿），
         // 再截图，保证 04-finished 画面干净。关不掉也不影响（输入发送已完成）。
