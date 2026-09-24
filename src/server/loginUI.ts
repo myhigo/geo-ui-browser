@@ -88,6 +88,7 @@ var PULL_WIN = null, PULL_ENDED = false;
 // 已构建面板的结构标识："<平台>|<有无登录窗口>"。用于避免轮询时整块重建
 var PANEL_KEY = null;
 var NOVNC_URL = ${JSON.stringify(config.novncUrl)};
+function novncUrl(){ var u=NOVNC_URL; return u + (u.indexOf('?')>=0?'&':'?') + '_t=' + Date.now(); }
 var BASE = ${JSON.stringify(config.basePath)};
 function api(p){ return (BASE || '') + p; }
 var ST = { none:{t:'未登录',c:'#c9cdd4'}, waiting:{t:'登录中',c:'#ff7d00'}, active:{t:'已登录',c:'#00b42a'}, cooling:{t:'冷却中',c:'#ff7d00'}, failed:{t:'不可用',c:'#f53f3f'} };
@@ -231,7 +232,7 @@ function syncTestButtons(){
       btn.onclick = function(){
         var parts = key.split('/'); var platform = parts[0]; var accountId = parts.slice(1).join('/');
         if(!open){
-          try { var w = window.open(NOVNC_URL, '_blank'); if(w) WIN_REFS[key] = w; } catch(e) { /* 弹窗被拦时后端窗口仍会开，用户可手动开 noVNC */ }
+          try { var w = window.open(novncUrl(), '_blank'); if(w) WIN_REFS[key] = w; } catch(e) { /* 弹窗被拦时后端窗口仍会开，用户可手动开 noVNC */ }
         }
         fetch(api('/api/login/'+platform+'/'+(open?'test-close':'test')), { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({accountId: accountId}) })
           .then(function(r){ return r.json().then(function(j){ return {ok:r.ok, j:j}; }); })
@@ -455,7 +456,7 @@ function renderPull(){
     if(headed) payload.headed = true;
     // 勾了「开启浏览器」→ 同步弹出 noVNC 标签页看容器里的浏览器画面（同步调用避免被浏览器拦截）；任务结束自动关闭（见 pullStatusTick）
     if(headed){
-      try { PULL_WIN = window.open(NOVNC_URL, '_blank'); }
+      try { PULL_WIN = window.open(novncUrl(), '_blank'); }
       catch(e) { PULL_WIN = null; }
       if(!PULL_WIN) toast('弹窗被浏览器拦截，可手动打开 '+NOVNC_URL);
     }
@@ -486,7 +487,7 @@ function pullStatusTick(){
 // 登录窗口标签页引用（登录会话同时只能一个，单 key 足够）
 function openLoginWin(){
   if(WIN_REFS['__login'] && !WIN_REFS['__login'].closed) return; // 已开着就不重复弹
-  try { var w = window.open(NOVNC_URL, '_blank'); if(w) WIN_REFS['__login'] = w; }
+  try { var w = window.open(novncUrl(), '_blank'); if(w) WIN_REFS['__login'] = w; }
   catch(e) { WIN_REFS['__login'] = null; }
   if(!WIN_REFS['__login']) toast('弹窗被拦截，可手动打开 '+NOVNC_URL);
 }
