@@ -49,6 +49,66 @@ export class DoubaoAdapter implements PlatformAdapter {
     return true; // 兜底：既无聊天输入框也无登录墙 → 保守视为未登录
   }
 
+  // 关闭平台干扰弹层（营销广告/活动弹窗等）。豆包弹层为 radix dialog 风格：
+  // 优先 Esc，再找关闭按钮（×），最后点全屏遮罩兜底。尽力而为，未关闭不抛错。
+  async dismissAds(): Promise<boolean> {
+    const visibleDialogCount = (): Promise<number> =>
+      this.page
+        .evaluate(() => {
+          const sel = '[role="dialog"], [role="alertdialog"], [class*="modal" i], [class*="popup" i]';
+          return Array.from(document.querySelectorAll(sel)).filter((el) => {
+            const r = (el as HTMLElement).getBoundingClientRect();
+            const s = getComputedStyle(el as HTMLElement);
+            return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none';
+          }).length;
+        })
+        .catch(() => 0);
+    // 1) Esc（radix dialog 通常支持 Esc 关闭）
+    await this.page.keyboard.press('Escape');
+    await this.page.waitForTimeout(400);
+    if ((await visibleDialogCount()) === 0) return true;
+    // 2) 关闭按钮（×）：dialog 内优先，再全局
+    const closeSelectors = [
+      '[role="dialog"] button[aria-label*="关闭"], [role="dialog"] button[aria-label*="close" i]',
+      '[role="dialog"] [data-slot="dialog-close"]',
+      'button[aria-label*="关闭"], button[aria-label*="close" i]',
+      '[data-slot="dialog-close"]',
+      '[class*="CloseButton" i], [class*="close-btn" i], [class*="close-icon" i]',
+    ];
+    for (const sel of closeSelectors) {
+      const btn = this.page.locator(sel).first();
+      const visible = await btn
+        .evaluate((el) => {
+          const r = (el as HTMLElement).getBoundingClientRect();
+          const s = getComputedStyle(el as HTMLElement);
+          return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none';
+        })
+        .catch(() => false);
+      if (visible) {
+        await btn.click({ timeout: 1500 }).catch(() => {});
+        await this.page.waitForTimeout(500);
+        if ((await visibleDialogCount()) === 0) return true;
+      }
+    }
+    // 3) 全屏遮罩点击兜底
+    const mask = this.page.locator('[class*="mask" i][class*="fixed" i], [class*="overlay" i]').first();
+    const maskVisible = await mask
+      .evaluate((el) => {
+        const r = (el as HTMLElement).getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+      })
+      .catch(() => false);
+    if (maskVisible) {
+      const box = await mask.boundingBox().catch(() => null);
+      if (box) {
+        await this.page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+        await this.page.waitForTimeout(500);
+        if ((await visibleDialogCount()) === 0) return true;
+      }
+    }
+    return false;
+  }
+
   // 输入并发送问题。
   // 豆包输入区是「textarea + Tiptap contenteditable」双控件：真实编辑器为
   // <div contenteditable="true" class="tiptap ProseMirror">。务必先把焦点真正落到可编辑区，
@@ -100,11 +160,25 @@ export class DoubaoAdapter implements PlatformAdapter {
         })
         .catch(() => '');
     const probe = question.slice(0, Math.max(1, Math.floor(question.length / 2)));
-    if (!(await enteredText()).includes(probe)) {
+    const ok = async (): Promise<boolean> => (await enteredText()).includes(probe);
+    if (!(await ok())) {
+      // 输入被打断（常见：营销弹窗/浮层中途弹出清空或遮挡输入框）→ 等待并关闭后重输一次
+      console.warn('⚠️ 输入校验失败：疑似被弹窗/浮层打断，等待并尝试关闭后重输…');
+      await this.page.waitForTimeout(2000);
+      await this.dismissAds().catch(() => false);
+      await this.page.waitForTimeout(500);
+      await input.locator.click().catch(() => {});
+      await input.locator.focus().catch(() => {});
+      await this.page.waitForTimeout(randWaitMs(DOUBAO_INPUT_PRE_TYPE));
+      await this.humanType(question);
+    }
+    if (!(await ok())) {
       console.warn('⚠️ 输入校验失败：问题文本未进入输入框，请人工检查（见 02-question.png）');
+      return; // 未输入成功就不假装已发送，交由调用方判失败
     }
 
-    // 是否真的发出去：输入框是否已被清空（不再含原问题）
+    // 是否真的发出去：输入框是否已被清空（不再含原问题）。此时输入框必含原问题，
+    // 清空 = 真发送；不会再把「输入失败的空输入框」误判为已发送。
     const isSent = async (): Promise<boolean> => !(await enteredText()).includes(probe);
     // 发送后轮询确认输入框清空（慢代理/带宽下页面清空有延迟），最多等 15s，避免一次性检查误报
     const waitSent = async (): Promise<boolean> => {
