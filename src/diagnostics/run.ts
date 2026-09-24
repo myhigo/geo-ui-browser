@@ -12,6 +12,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { resolvePlatform, PlatformDef } from '../platforms/index.js';
+import { windowPositionFor } from '../runtime/windowPos.js';
 import { probeElements } from './elementProbe.js';
 import { DiagnosticResult, ElementDiagnosisItem, SourceInfo, ScreenshotMode } from '../types.js';
 import { config, paths } from '../config/index.js';
@@ -107,7 +108,11 @@ export async function runDiagnostic(
     slowMo: headless ? 0 : 20, // headless 模式下不刻意放慢；非 headless 用于人工可视监控
     // 去掉 navigator.webdriver 等明显的自动化特征，降低被风控误判的概率。
     // ⚠️ 仅消除"我是脚本"的标记，**不绕过**任何验证码/登录/风控——该登录的照样人工登录。
-    args: ['--disable-blink-features=AutomationControlled'],
+    args: [
+      '--disable-blink-features=AutomationControlled',
+      // 有头模式多个窗口默认堆叠 (0,0) 互相遮挡（noVNC 只看到最上层）→ 按 profile 错开摆放
+      ...(headless ? [] : [windowPositionFor(opts.userDataDir ?? def.id)]),
+    ],
     // 去掉 Playwright 默认注入的 --enable-automation（会留下 cdc_ 钩子与 webdriver 标记）
     ignoreDefaultArgs: ['--enable-automation'],
     ...(opts.proxy ? { proxy: opts.proxy } : {}),

@@ -9,6 +9,7 @@ import { chromium, BrowserContext, Page } from 'playwright';
 import fs from 'fs';
 import path from 'path';
 import { DoubaoAdapter } from '../platforms/doubao/DoubaoAdapter.js';
+import { windowPositionFor } from '../runtime/windowPos.js';
 import { resolvePlatform } from '../platforms/index.js';
 import { firstFound } from '../diagnostics/elementProbe.js';
 import { accountRepo, profileDirOf, Account, AccountStatus } from '../storage/accountRepo.js';
@@ -269,11 +270,16 @@ export function loginBusy(): { platformId?: string; accountId?: string } {
   return activeLogin ? { platformId: activeLogin.platformId, accountId: activeLogin.accountId } : {};
 }
 
-function launchOpts(proxy?: { server: string; username?: string; password?: string }): Parameters<typeof chromium.launchPersistentContext>[1] {
+function launchOpts(dir: string, proxy?: { server: string; username?: string; password?: string }): Parameters<typeof chromium.launchPersistentContext>[1] {
   const fp = fingerprint();
   const o: Parameters<typeof chromium.launchPersistentContext>[1] = {
     headless: false,
-    args: ['--disable-blink-features=AutomationControlled', '--lang=zh-CN'],
+    args: [
+      '--disable-blink-features=AutomationControlled',
+      '--lang=zh-CN',
+      // 与收录检测窗口按 profile 错开，避免多个有头窗口在 Xvfb 上堆叠遮挡
+      windowPositionFor(dir),
+    ],
     ignoreDefaultArgs: ['--enable-automation'],
     viewport: fp.viewport,
     userAgent: fp.userAgent,
@@ -334,7 +340,7 @@ async function openProbe(
 ): Promise<{ ok: boolean; loginRequired?: boolean; error?: string }> {
   let context: BrowserContext;
   try {
-    context = await launchPersistentRetry(dir, { ...launchOpts(proxy), headless: true });
+    context = await launchPersistentRetry(dir, { ...launchOpts(dir, proxy), headless: true });
   } catch (e) {
     return { ok: false, error: `打开会话失败：${(e as Error).message}` };
   }
@@ -468,7 +474,7 @@ export async function startLogin(
   const task = (async () => {
     let context: BrowserContext;
     try {
-      context = await launchPersistentRetry(acc.dir, launchOpts(await proxyOf(acc)));
+      context = await launchPersistentRetry(acc.dir, launchOpts(acc.dir, await proxyOf(acc)));
     } catch (e) {
       await accountRepo().patch(platformId, acc.id, { status: 'failed', note: `打开登录窗口失败：${(e as Error).message}` });
       return;
@@ -694,7 +700,7 @@ export async function testAccount(
   }
   let context: BrowserContext;
   try {
-    context = await chromium.launchPersistentContext(acc.dir, launchOpts(await proxyOf(acc)));
+    context = await chromium.launchPersistentContext(acc.dir, launchOpts(acc.dir, await proxyOf(acc)));
   } catch (e) {
     return { ok: false, msg: `打开测试窗口失败：${(e as Error).message}` };
   }
