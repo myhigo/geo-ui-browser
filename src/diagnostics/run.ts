@@ -350,7 +350,9 @@ export async function runDiagnostic(
     }
 
     try {
+      const _tStage = Date.now();
       loginRequired = await adapter.checkLogin();
+      console.log(`[stage2] checkLogin 用时 ${((Date.now() - _tStage) / 1000).toFixed(1)}s（loginRequired=${loginRequired}）`);
       // 不再用账号昵称探测兜底（2026-09-23 按用户要求简化，不抽取昵称）。
       // 注意取舍：文心等无登录墙平台的 checkLogin 恒 false，无法区分「真登录」与「磁盘无登录态」；
       // 该场景由 confirmLogin 里的会话级 cookie 转持久兜底。
@@ -408,7 +410,9 @@ export async function runDiagnostic(
     // 避免弹层挡住后续交互。无实现（豆包等）则跳过。
     try {
       if (adapter.dismissAds) {
+        const _tD = Date.now();
         const dismissed = await adapter.dismissAds();
+        console.log(`[stage2] dismissAds 用时 ${((Date.now() - _tD) / 1000).toFixed(1)}s`);
         if (dismissed) notes.push('🛡️ 已自动关闭平台首页弹窗/广告。');
         await page.waitForTimeout(800); // 等关闭动画/重排稳定
       }

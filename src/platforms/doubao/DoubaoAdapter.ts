@@ -114,15 +114,22 @@ export class DoubaoAdapter implements PlatformAdapter {
   // <div contenteditable="true" class="tiptap ProseMirror">。务必先把焦点真正落到可编辑区，
   // 否则 keyboard.type 会落空（点击可能被拦截 / 光标进了 textarea 镜像）。
   async sendQuestion(question: string): Promise<void> {
+    const _t0 = Date.now();
+    const _step = (tag: string): void => {
+      console.log(`[sendQuestion] ${tag} 用时 ${((Date.now() - _t0) / 1000).toFixed(1)}s`);
+    };
     const input = await firstFound(this.page, this.selectors.input);
     if (!input) throw new Error('ELEMENT_NOT_FOUND: input');
+    _step('定位输入框');
 
     // 聚焦可编辑区：先点击，再用 .focus() 强制兜底（避免点击被拦截导致失焦）
     // 显式 8s 超时：慢代理/遮挡下快速失败走兜底，不累积 Playwright 默认 30s 静默超时
     await input.locator.click({ timeout: 8000 }).catch(() => {});
+    _step('点击输入框');
     await this.page.waitForTimeout(randWaitMs(DOUBAO_INPUT_FOCUS_SETTLE));
     await input.locator.focus().catch(() => {});
     await this.page.waitForTimeout(randWaitMs(DOUBAO_INPUT_FOCUS_AFTER));
+    _step('聚焦完成');
 
     // 校验是否真的聚焦到可编辑区；没聚焦则尝试 textarea 兜底
     const focusedEditable = (): Promise<boolean> =>
@@ -147,7 +154,9 @@ export class DoubaoAdapter implements PlatformAdapter {
     }
     // 打字前随机停顿 500–2000ms（模拟真人准备输入）
     await this.page.waitForTimeout(randWaitMs(DOUBAO_INPUT_PRE_TYPE));
+    _step('开始打字前');
     await this.humanType(question);
+    _step('打字完成');
 
     // 校验问题文本是否真的进入输入框（contenteditable 或 textarea 任一含即可）。
     // ⚠️ 必须用单个 page.evaluate 一次读完，绝不能用 locator.innerText()/inputValue()：
@@ -194,7 +203,12 @@ export class DoubaoAdapter implements PlatformAdapter {
     // 1) 优先 Enter（贴合用户习惯）。发送前随机停顿 500–1000ms（模拟真人检查后发送）
     await this.page.waitForTimeout(randWaitMs(DOUBAO_INPUT_PRE_ENTER));
     await this.page.keyboard.press('Enter');
-    if (await waitSent()) return;
+    _step('Enter 已按');
+    if (await waitSent()) {
+      _step('waitSent 通过');
+      return;
+    }
+    _step('waitSent 超时');
 
     // 2) 兜底前先确认：Enter 其实已发送成功、只是清空延迟未确认到 → 直接视为成功。
     //    否则在已发送状态再点发送钮会重复发送/白等 30s 静默超时（输入阶段 2 分半的根因）。
@@ -202,9 +216,14 @@ export class DoubaoAdapter implements PlatformAdapter {
 
     // 3) 兜底：点输入区内圆钮（显式 8s 超时快速失败，不累积默认 30s）
     await input.locator.click({ timeout: 8000 }).catch(() => {});
+    _step('兜底点输入框');
     const send = await firstFound(this.page, this.selectors.sendButton);
     if (send) await send.locator.click({ timeout: 8000 }).catch(() => {});
-    if (await waitSent()) return;
+    _step('兜底点发送钮');
+    if (await waitSent()) {
+      _step('兜底 waitSent 通过');
+      return;
+    }
 
     console.warn('⚠️ 发送未能确认（输入框仍含原问题），请人工检查发送交互');
   }
