@@ -58,6 +58,7 @@ if (!h.includes(barMarker)) {
 <div id="geo-paste-bar" style="position:fixed;right:12px;bottom:12px;z-index:2147483647;display:flex;align-items:center;gap:6px;background:rgba(28,28,30,.94);border:1px solid #5a5a5f;border-radius:20px;padding:5px 10px;box-shadow:0 2px 12px rgba(0,0,0,.45);font-size:12px;color:#bbb;cursor:pointer;" title="点这里，再按 Cmd/Ctrl+V 粘贴">
   <span id="geo-paste-tip">粘贴：</span>
   <input id="geo-paste-in" placeholder="点击后 Ctrl+V" style="width:240px;max-width:38vw;background:#1c1c1e;color:#eee;border:1px solid #5a5a5f;border-radius:14px;padding:4px 10px;font-size:13px;outline:none;cursor:text;" autocomplete="off" spellcheck="false">
+  <button id="geo-paste-send" style="background:#3a6ff7;color:#fff;border:0;border-radius:14px;padding:4px 12px;font-size:13px;cursor:pointer;white-space:nowrap;">发送</button>
 </div>
 `;
   h = h.replace('</body>', bar + '</body>');
@@ -100,13 +101,13 @@ if (!h.includes(barMarker)) {
       input.placeholder = '发送失败';
     }
   }
-  input.addEventListener('paste', function(e){
-    var d = e.clipboardData || {};
-    var t = (typeof d.getData === 'function') ? d.getData('text/plain') : '';
-    setTimeout(function(){ send(t || input.value); }, 0);
-  });
+  /* 粘贴进输入框后不自动发送，等用户点「发送」（内容可先检查） */
+  input.addEventListener('paste', function(){ /* 内容已由浏览器填入 input */ });
+  var sendBtn = document.getElementById('geo-paste-send');
+  function doSend(){ send(input.value); }
+  if (sendBtn) sendBtn.addEventListener('click', doSend);
   input.addEventListener('keydown', function(e){
-    if (e.key === 'Enter') { send(input.value); e.preventDefault(); }
+    if (e.key === 'Enter') { doSend(); e.preventDefault(); }
   });
   /* 兜底：焦点不在输入框时按 Cmd/Ctrl+V → 尝试读剪贴板直达；读不到则聚焦粘贴框引导再按一次 */
   document.addEventListener('keydown', function (e) {
@@ -125,7 +126,8 @@ if (!h.includes(barMarker)) {
     try {
       if (navigator.clipboard && navigator.clipboard.readText) {
         navigator.clipboard.readText().then(function (t) {
-          if (t) send(t); else fallback();
+          if (t) { input.value = t; input.focus(); }
+          else fallback();
         }).catch(fallback);
         return;
       }
