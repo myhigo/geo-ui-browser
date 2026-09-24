@@ -61,6 +61,11 @@ if (!h.includes(barMarker)) {
   <button id="geo-paste-send" style="background:#3a6ff7;color:#fff;border:0;border-radius:14px;padding:4px 12px;font-size:13px;cursor:pointer;white-space:nowrap;">发送</button>
 </div>
 `;
+  /* 强制刷新 ui.js：浏览器会缓存旧版 ui.js（无 __geoGetRfb 钩子），
+     导致 send() 永远判"未连接"。给引用加版本号绕开缓存。 */
+  if (h.indexOf('app/ui.js?v=') === -1) {
+    h = h.replace('src="app/ui.js"', 'src="app/ui.js?v=geov1"');
+  }
   h = h.replace('</body>', bar + '</body>');
   const script = `
 <script>
