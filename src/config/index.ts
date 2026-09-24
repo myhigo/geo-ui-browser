@@ -107,7 +107,7 @@ export interface AppConfig {
    */
   testOutDir: string;
   shot: {
-    /** 输出格式：webp 体积远小于 png，文字边缘优于 jpeg */
+    /** 输出格式：默认 png；webp 体积更小，jpeg 文字有振铃 */
     format: 'webp' | 'jpeg' | 'png';
     /** 起始质量，压缩后仍超限会逐步下调 */
     quality: number;
@@ -167,7 +167,7 @@ export const config: AppConfig = {
   novncUrl: env('GEO_NOVNC_URL') ?? defaultNovncUrl(basePath),
   testOutDir: env('GEO_TEST_OUT_DIR') ?? '',
   shot: {
-    format: (env('GEO_SHOT_FORMAT') === 'jpeg' ? 'jpeg' : env('GEO_SHOT_FORMAT') === 'png' ? 'png' : 'webp') as
+    format: (env('GEO_SHOT_FORMAT') === 'jpeg' ? 'jpeg' : env('GEO_SHOT_FORMAT') === 'webp' ? 'webp' : 'png') as
       | 'webp'
       | 'jpeg'
       | 'png',
