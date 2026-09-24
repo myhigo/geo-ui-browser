@@ -181,9 +181,9 @@ export class DoubaoAdapter implements PlatformAdapter {
     // 是否真的发出去：输入框是否已被清空（不再含原问题）。此时输入框必含原问题，
     // 清空 = 真发送；不会再把「输入失败的空输入框」误判为已发送。
     const isSent = async (): Promise<boolean> => !(await enteredText()).includes(probe);
-    // 发送后轮询确认输入框清空（慢代理/带宽下页面清空有延迟），最多等 15s，避免一次性检查误报
+    // 发送后轮询确认输入框清空（慢代理/带宽下页面清空有延迟，实测可 >15s），最多等 30s
     const waitSent = async (): Promise<boolean> => {
-      const deadline = Date.now() + 15000;
+      const deadline = Date.now() + 30000;
       for (;;) {
         if (await isSent()) return true;
         if (Date.now() >= deadline) return false;
@@ -196,10 +196,14 @@ export class DoubaoAdapter implements PlatformAdapter {
     await this.page.keyboard.press('Enter');
     if (await waitSent()) return;
 
-    // 2) 兜底：点输入区内圆钮
-    await input.locator.click().catch(() => {});
+    // 2) 兜底前先确认：Enter 其实已发送成功、只是清空延迟未确认到 → 直接视为成功。
+    //    否则在已发送状态再点发送钮会重复发送/白等 30s 静默超时（输入阶段 2 分半的根因）。
+    if (await isSent()) return;
+
+    // 3) 兜底：点输入区内圆钮（显式 8s 超时快速失败，不累积默认 30s）
+    await input.locator.click({ timeout: 8000 }).catch(() => {});
     const send = await firstFound(this.page, this.selectors.sendButton);
-    if (send) await send.locator.click().catch(() => {});
+    if (send) await send.locator.click({ timeout: 8000 }).catch(() => {});
     if (await waitSent()) return;
 
     console.warn('⚠️ 发送未能确认（输入框仍含原问题），请人工检查发送交互');
