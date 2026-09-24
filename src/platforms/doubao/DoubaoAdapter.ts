@@ -51,7 +51,8 @@ export class DoubaoAdapter implements PlatformAdapter {
 
   // 关闭平台干扰弹层（营销广告/活动弹窗等）。豆包弹层为 radix dialog 风格：
   // 优先 Esc，再找关闭按钮（×），最后点全屏遮罩兜底。尽力而为，未关闭不抛错。
-  async dismissAds(): Promise<boolean> {
+  async dismissAds(opts: { skipEsc?: boolean } = {}): Promise<boolean> {
+    const skipEsc = opts.skipEsc === true;
     const visibleDialogCount = (): Promise<number> =>
       this.page
         .evaluate(() => {
@@ -63,9 +64,13 @@ export class DoubaoAdapter implements PlatformAdapter {
           }).length;
         })
         .catch(() => 0);
-    // 1) Esc（radix dialog 通常支持 Esc 关闭）
-    await this.page.keyboard.press('Escape');
-    await this.page.waitForTimeout(400);
+    // 1) Esc（radix dialog 通常支持 Esc 关闭）。
+    //    回答生成期间（skipEsc）不按 Esc：豆包会响应 Esc 显示「双击Esc停止生成」提示条，
+    //    反复触发让提示一直挂着，且不干扰生成状态。
+    if (!skipEsc) {
+      await this.page.keyboard.press('Escape');
+      await this.page.waitForTimeout(400);
+    }
     if ((await visibleDialogCount()) === 0) return true;
     // 2) 关闭按钮（×）：dialog 内优先，再全局
     const closeSelectors = [

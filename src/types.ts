@@ -50,7 +50,7 @@ export interface PlatformAdapter {
   // 关闭平台自带的干扰弹层（首页引导/营销广告/活动浮层等）。设为可选钩子：由各平台自己
   // 识别与关闭（页面结构私有，不假通用）。返回 true=本检测到并关闭了弹层；false=无弹层。
   // run.ts 在定位输入框之前调用，确保弹层不会挡住后续交互。诊断日志在实现内部打印。
-  dismissAds?(): Promise<boolean>;
+  dismissAds?(opts?: { skipEsc?: boolean }): Promise<boolean>;
   // 处理平台发送后弹出的滑动验证（风控滑块）。可选钩子，平台私有实现：由各平台自己识别
   // 滑块结构并仿人类拖动（不假通用、不用打码平台/漏洞）。captureDir 为样本根目录，用于落盘
   // 验证码现场（DOM+截图）供精确调参；未提供则跳过抓取。返回 true=已通过（自动或人工）。

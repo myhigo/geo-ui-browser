@@ -487,13 +487,14 @@ export async function runDiagnostic(
       while (!answerDone) {
         await Promise.race([answerDoneP, page.waitForTimeout(15000)]);
         if (answerDone) break;
-        if (adapter.dismissAds) await adapter.dismissAds().catch(() => false);
+        // 回答生成期间：不按 Esc（避免触发豆包「双击Esc停止生成」提示），仅检测/点关闭按钮
+        if (adapter.dismissAds) await adapter.dismissAds({ skipEsc: true }).catch(() => false);
       }
       if (answerErr) throw answerErr;
       if (debug) {
         // 最终截图前检查弹窗：有则关闭（复用平台 dismissAds，已修复 auto-wait 卡顿），
         // 再截图，保证 04-finished 画面干净。关不掉也不影响（输入发送已完成）。
-        if (adapter.dismissAds) await adapter.dismissAds().catch(() => false);
+        if (adapter.dismissAds) await adapter.dismissAds({ skipEsc: true }).catch(() => false);
         await page.waitForTimeout(500);
         await page.screenshot({ path: path.join(dirS, '04-finished.png') });
         capturedShots.push('04-finished.png');
